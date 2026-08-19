@@ -1,0 +1,19 @@
+{
+  "name": "silmaril-firewall",
+  "description": "Classify GitHub Copilot CLI lifecycle events with Silmaril Firewall.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Silmaril Security"
+  },
+  "homepage": "https://www.silmaril.dev/docs",
+  "repository": "https://github.com/Silmaril-Security/CopilotFirewallPlugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "copilot-cli",
+    "ai-security",
+    "firewall",
+    "prompt-injection"
+  ],
+  "hooks": "hooks/hooks.json"
+}
+

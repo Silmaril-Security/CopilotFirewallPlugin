@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js userPromptSubmitted",
+        "timeoutSec": 12
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js preToolUse",
+        "timeoutSec": 12
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js postToolUse",
+        "timeoutSec": 12
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js postToolUseFailure",
+        "timeoutSec": 12
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js agentStop",
+        "timeoutSec": 12
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "node ./dist/copilot-hook.js subagentStop",
+        "timeoutSec": 12
+      }
+    ]
+  }
+}
+

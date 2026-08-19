@@ -1,0 +1,38 @@
+{
+  "name": "@silmaril/copilot-firewall-plugin",
+  "version": "0.1.0",
+  "description": "Silmaril Firewall lifecycle protection for GitHub Copilot CLI.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": true,
+  "keywords": [
+    "copilot-cli",
+    "ai-security",
+    "firewall",
+    "prompt-injection"
+  ],
+  "homepage": "https://www.silmaril.dev/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Silmaril-Security/CopilotFirewallPlugin.git"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "npm run build && node --import tsx --test test/*.test.ts",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@silmaril-security/sdk": "0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.1",
+    "tsx": "^4.20.6",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
