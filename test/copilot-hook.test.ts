@@ -8,7 +8,9 @@ import test from "node:test";
 import {
   PLUGIN_VERSION,
   SAFE_BLOCK_MESSAGE,
+  SAFE_WARN_MESSAGE,
   buildHookTarget,
+  effectiveMode,
   readCopilotAssistantOutput,
   runCopilotHook,
   withProvenance,
@@ -30,6 +32,11 @@ const BASE_ENV = {
   SILMARIL_BLOCK_MALICIOUS: "false",
   SILMARIL_DEBUG: "false",
 };
+
+test("effective mode keeps an explicit non-blocking override authoritative", () => {
+  assert.equal(effectiveMode({ prediction: "MALICIOUS", mode: "block" }, "shadow"), "shadow");
+  assert.equal(effectiveMode({ prediction: "MALICIOUS" }), "shadow");
+});
 
 function dependencies(
   results: Array<Record<string, unknown> | Error>,
@@ -113,6 +120,7 @@ test("runtime configuration requires a private schema-v1 file when present", asy
     apiUrl: "https://file.example/classify",
     endpointId: "2b64e603-f82a-4aec-9524-9736472dc80a",
     timeoutMs: 375,
+    mode: "block",
     blockMalicious: true,
     debug: true,
   }), { mode: 0o600 });
@@ -121,6 +129,7 @@ test("runtime configuration requires a private schema-v1 file when present", asy
     apiUrl: "https://file.example/classify",
     endpointId: "2b64e603-f82a-4aec-9524-9736472dc80a",
     timeoutMs: 375,
+    mode: "block",
     blockMalicious: true,
     debug: true,
   });
@@ -176,7 +185,7 @@ test("shadow mode classifies every Copilot-native event without mutation", async
   );
 });
 
-test("enforce mode denies tool calls and replaces tool results only", async () => {
+test("block mode uses native deny and stop decisions without replacing tool results", async () => {
   const malicious = { prediction: "MALICIOUS", primaryOutcome: "code_execution" };
   const env = { ...BASE_ENV, SILMARIL_BLOCK_MALICIOUS: "true" };
   const events: any[] = [];
@@ -196,22 +205,46 @@ test("enforce mode denies tool calls and replaces tool results only", async () =
     env,
     dependencies([malicious], events),
   );
-  assert.deepEqual(postTool, {
-    modifiedResult: { resultType: "success", textResultForLlm: SAFE_BLOCK_MESSAGE },
-    additionalContext: SAFE_BLOCK_MESSAGE,
-  });
-  for (const eventName of ["userPromptSubmitted", "postToolUseFailure", "subagentStop"] as const) {
+  assert.deepEqual(postTool, {});
+  for (const eventName of ["userPromptSubmitted", "postToolUseFailure"] as const) {
     assert.deepEqual(
       await runCopilotHook(eventName, payload(eventName), env, dependencies([malicious], events)),
       {},
     );
   }
+  assert.deepEqual(
+    await runCopilotHook("subagentStop", payload("subagentStop"), env, dependencies([malicious], events)),
+    { decision: "block", reason: SAFE_BLOCK_MESSAGE },
+  );
   assert.deepEqual(events.map((event) => event.policyDecision), [
-    "block", "block", "monitor", "monitor", "monitor",
+    "block", "monitor", "monitor", "monitor", "block",
   ]);
   assert.deepEqual(events.map((event) => event.nativeAction), [
-    "block_returned", "content_replaced", "allowed", "allowed", "allowed",
+    "block_returned", "allowed", "allowed", "allowed", "block_returned",
   ]);
+  assert.equal(events[1].blockUnavailable, true);
+});
+
+test("warn mode surfaces one bounded warning only on supported context hooks", async () => {
+  const malicious = { prediction: "MALICIOUS", mode: "warn", score: 0.99 };
+  const events: any[] = [];
+  const backendControlledEnv: Record<string, string> = { ...BASE_ENV };
+  delete backendControlledEnv.SILMARIL_BLOCK_MALICIOUS;
+  for (const eventName of ["preToolUse", "postToolUse", "postToolUseFailure"] as const) {
+    assert.deepEqual(
+      await runCopilotHook(eventName, payload(eventName), backendControlledEnv, dependencies([malicious], events)),
+      { additionalContext: SAFE_WARN_MESSAGE },
+    );
+  }
+  for (const eventName of ["userPromptSubmitted", "subagentStop"] as const) {
+    assert.deepEqual(
+      await runCopilotHook(eventName, payload(eventName), backendControlledEnv, dependencies([malicious], events)),
+      {},
+    );
+  }
+  assert.ok(events.slice(0, 3).every((event) => event.warnDelivery === "delivered"));
+  assert.ok(events.slice(3).every((event) => event.warnDelivery === "unsupported"));
+  assert.doesNotMatch(JSON.stringify(events), /tool result|tool failed|user prompt|subagent output/u);
 });
 
 test("classification and evidence failures always fail open", async () => {
@@ -311,7 +344,7 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.version, "0.2.0");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");

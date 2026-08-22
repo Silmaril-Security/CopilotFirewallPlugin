@@ -2,7 +2,7 @@
 
 Silmaril Firewall protection for GitHub Copilot CLI.
 
-The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, final responses, and subagent responses. Shadow mode records findings without changing Copilot behavior. Enforce mode denies malicious tool calls and replaces malicious tool results before they return to the model. Copilot command hooks cannot deny an initial prompt, so prompts and agent outputs remain monitoring-only in both modes.
+The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, final responses, and subagent responses. Shadow records backend evidence only. Warn preserves content and adds one bounded content-free warning at supported same-turn context surfaces. Block uses Copilot-native deny or stop responses where available; it never replaces completed content.
 
 ## Install
 
@@ -26,14 +26,6 @@ The built `dist/copilot-hook.js` file is committed because Copilot installs plug
 
 ## Protection boundaries
 
-| Copilot event | Shadow | Enforce |
-| --- | --- | --- |
-| `userPromptSubmitted` | Monitor | Monitor |
-| `preToolUse` | Monitor | Deny malicious calls |
-| `postToolUse` | Monitor | Replace malicious results |
-| `postToolUseFailure` | Monitor | Monitor |
-| `agentStop` | Monitor | Monitor |
-| `subagentStop` | Monitor | Monitor |
+Omit `mode` to use the backend, or set `shadow`, `warn`, or `block`. Explicit mode takes precedence over legacy booleans. Unsupported Block boundaries remain unchanged and record `block_unavailable`; failures fail open without agent-visible context.
 
 Local evidence contains fingerprints, decisions, bounded risk metadata, and version provenance. It never stores raw prompts, tool arguments, results, or responses.
-
