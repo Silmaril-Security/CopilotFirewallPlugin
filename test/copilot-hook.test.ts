@@ -10,6 +10,7 @@ import {
   SAFE_BLOCK_MESSAGE,
   SAFE_WARN_MESSAGE,
   buildHookTarget,
+  effectiveMode,
   readCopilotAssistantOutput,
   runCopilotHook,
   withProvenance,
@@ -31,6 +32,11 @@ const BASE_ENV = {
   SILMARIL_BLOCK_MALICIOUS: "false",
   SILMARIL_DEBUG: "false",
 };
+
+test("effective mode keeps an explicit non-blocking override authoritative", () => {
+  assert.equal(effectiveMode({ prediction: "MALICIOUS", mode: "block" }, "shadow"), "shadow");
+  assert.equal(effectiveMode({ prediction: "MALICIOUS" }), "shadow");
+});
 
 function dependencies(
   results: Array<Record<string, unknown> | Error>,
