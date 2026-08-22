@@ -1368,7 +1368,7 @@ function buildHookTarget(eventName, input, env = process.env) {
 }
 function effectiveMode(result, requestedMode) {
   const returned = result.mode;
-  return returned === "shadow" || returned === "warn" || returned === "block" ? returned : requestedMode ?? "shadow";
+  return requestedMode ?? (returned === "shadow" || returned === "warn" || returned === "block" ? returned : "shadow");
 }
 function readCopilotAssistantOutput(transcriptPath, env = process.env) {
   if (!transcriptPath) return void 0;

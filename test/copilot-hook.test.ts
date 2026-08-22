@@ -228,15 +228,17 @@ test("block mode uses native deny and stop decisions without replacing tool resu
 test("warn mode surfaces one bounded warning only on supported context hooks", async () => {
   const malicious = { prediction: "MALICIOUS", mode: "warn", score: 0.99 };
   const events: any[] = [];
+  const backendControlledEnv: Record<string, string> = { ...BASE_ENV };
+  delete backendControlledEnv.SILMARIL_BLOCK_MALICIOUS;
   for (const eventName of ["preToolUse", "postToolUse", "postToolUseFailure"] as const) {
     assert.deepEqual(
-      await runCopilotHook(eventName, payload(eventName), BASE_ENV, dependencies([malicious], events)),
+      await runCopilotHook(eventName, payload(eventName), backendControlledEnv, dependencies([malicious], events)),
       { additionalContext: SAFE_WARN_MESSAGE },
     );
   }
   for (const eventName of ["userPromptSubmitted", "subagentStop"] as const) {
     assert.deepEqual(
-      await runCopilotHook(eventName, payload(eventName), BASE_ENV, dependencies([malicious], events)),
+      await runCopilotHook(eventName, payload(eventName), backendControlledEnv, dependencies([malicious], events)),
       {},
     );
   }
