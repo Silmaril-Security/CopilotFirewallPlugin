@@ -8,7 +8,7 @@ const MAX_SAFE_VALUE_LENGTH = 128;
 
 export type ProtectionHook = "user_input" | "pre_tool" | "post_tool" | "tool_result" | "llm_output" | "subagent" | "unknown";
 export type ProtectionCategory = "credential_exposure" | "sensitive_data_exposure" | "code_execution" | "destructive_change" | "external_communication" | "privilege_change" | "unsafe_agent_control" | "other" | "unknown";
-export type NativeAction = "none" | "allowed" | "block_returned" | "content_replaced" | "failed" | "unavailable";
+export type NativeAction = "none" | "allowed" | "block_returned" | "warning_context_returned" | "failed" | "unavailable";
 
 export type LocalProtectionEventV1 = {
   schemaVersion: 1;
@@ -16,7 +16,7 @@ export type LocalProtectionEventV1 = {
   occurredAt: string;
   host: "copilot";
   hook: ProtectionHook;
-  mode: "block" | "shadow";
+  mode: "block" | "warn" | "shadow";
   requestFingerprint?: string;
   sessionFingerprint?: string;
   toolDisplayName?: string;
@@ -25,8 +25,10 @@ export type LocalProtectionEventV1 = {
   prediction: "benign" | "malicious" | "unknown" | "unavailable";
   modelScore?: number;
   modelThreshold?: number;
-  policyDecision: "allow" | "monitor" | "block" | "unavailable";
+  policyDecision: "allow" | "monitor" | "warn" | "block" | "unavailable";
   nativeAction: NativeAction;
+  warnDelivery?: "delivered" | "unsupported";
+  blockUnavailable?: boolean;
   outcome: "not_observed";
   evidenceTruth: "plugin_reported" | "native_response_returned";
   evidenceCompleteness: "partial";
@@ -44,13 +46,15 @@ export type LocalProtectionEventV1 = {
 export type LocalEvidenceInput = {
   pluginVersion: string;
   hook: ProtectionHook;
-  mode: "block" | "shadow";
+  mode: "block" | "warn" | "shadow";
   requestFingerprint?: string;
   sessionId?: string;
   toolName?: string;
   classification: Record<string, unknown>;
   policyDecision: LocalProtectionEventV1["policyDecision"];
   nativeAction: NativeAction;
+  warnDelivery?: "delivered" | "unsupported";
+  blockUnavailable?: boolean;
   occurredAt?: Date;
 };
 
@@ -72,8 +76,7 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
   const riskClass = normalizeCategory(
     input.classification.primaryOutcome ?? input.classification.primary_outcome,
   );
-  const nativeResponseReturned = input.nativeAction === "block_returned"
-    || input.nativeAction === "content_replaced";
+  const nativeResponseReturned = input.nativeAction === "block_returned";
   return omitUndefined({
     schemaVersion: 1,
     id: `event-${sha256([
@@ -99,6 +102,8 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
     modelThreshold: unitInterval(input.classification.threshold),
     policyDecision: input.policyDecision,
     nativeAction: input.nativeAction,
+    warnDelivery: input.warnDelivery,
+    blockUnavailable: input.blockUnavailable,
     outcome: "not_observed",
     evidenceTruth: nativeResponseReturned ? "native_response_returned" : "plugin_reported",
     evidenceCompleteness: "partial",
@@ -226,4 +231,3 @@ function stringValue(value: unknown): string | undefined {
 function omitUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
-

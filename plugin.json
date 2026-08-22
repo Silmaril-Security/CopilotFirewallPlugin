@@ -1,7 +1,7 @@
 {
   "name": "silmaril-firewall",
   "description": "Classify GitHub Copilot CLI lifecycle events with Silmaril Firewall.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Silmaril Security"
   },
