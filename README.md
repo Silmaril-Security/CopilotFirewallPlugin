@@ -2,7 +2,7 @@
 
 Silmaril Firewall protection for GitHub Copilot CLI.
 
-The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, final responses, and subagent responses. Shadow records backend evidence only. Warn preserves content and adds one bounded content-free warning at supported same-turn context surfaces. Block uses Copilot-native deny or stop responses where available; it never replaces completed content.
+The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, and subagent responses from their current native hook payloads. Shadow records backend evidence only. Warn preserves content and adds one bounded content-free warning at supported same-turn context surfaces. Block uses Copilot-native deny or stop responses where available; it never replaces completed content.
 
 ## Install
 
@@ -29,3 +29,5 @@ The built `dist/copilot-hook.js` file is committed because Copilot installs plug
 Omit `mode` to use the backend, or set `shadow`, `warn`, or `block`. Explicit mode takes precedence over legacy booleans. Unsupported Block boundaries remain unchanged and record `block_unavailable`; failures fail open without agent-visible context.
 
 Local evidence contains fingerprints, decisions, bounded risk metadata, and version provenance. It never stores raw prompts, tool arguments, results, or responses.
+
+Every native hook event produces at most one classification, and conversation state is owned by the Firewall sequence cache. Copilot's `agentStop` currently exposes only a transcript path, so the plugin intentionally skips that event instead of reading history to reconstruct a final response. `subagentStop` remains covered because Copilot exposes the current response directly.

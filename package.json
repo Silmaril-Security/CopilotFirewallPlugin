@@ -1,6 +1,6 @@
 {
   "name": "@silmaril/copilot-firewall-plugin",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Silmaril Firewall lifecycle protection for GitHub Copilot CLI.",
   "type": "module",
   "license": "Apache-2.0",
