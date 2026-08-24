@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,7 +13,6 @@ import {
   effectiveMode,
   governanceContext,
   isBlockCandidate,
-  readCopilotAssistantOutput,
   runCopilotHook,
   withProvenance,
   type CopilotEventName,
@@ -125,21 +124,6 @@ function payload(event: CopilotEventName, transcriptPath?: string): Record<strin
   }
 }
 
-async function transcriptFixture(): Promise<{ copilotHome: string; transcript: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "silmaril-copilot-transcript-"));
-  const session = path.join(root, "session-state", "session-1");
-  await mkdir(session, { recursive: true });
-  const transcript = path.join(session, "events.jsonl");
-  const lines = [
-    { type: "user.message", data: { content: "private user input" } },
-    { type: "assistant.message", data: { content: "first output" } },
-    { type: "tool.execution_complete", data: { result: "private tool output" } },
-    { type: "assistant.message", data: { content: "final assistant output" } },
-  ];
-  await writeFile(transcript, lines.map((line) => JSON.stringify(line)).join("\n"));
-  return { copilotHome: root, transcript };
-}
-
 test("runtime configuration requires a private schema-v1 file when present", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "silmaril-copilot-config-"));
   const filePath = path.join(root, "silmaril-firewall.json");
@@ -173,8 +157,7 @@ test("runtime configuration requires a private schema-v1 file when present", asy
   assert.equal(resolveRuntimeConfig({ SILMARIL_CONFIG_PATH: filePath }), undefined);
 });
 
-test("shadow mode classifies every Copilot-native event without mutation", async () => {
-  const fixture = await transcriptFixture();
+test("shadow mode classifies only events with current native content", async () => {
   const events: any[] = [];
   const calls: any[] = [];
   const eventNames: CopilotEventName[] = [
@@ -194,8 +177,8 @@ test("shadow mode classifies every Copilot-native event without mutation", async
     assert.deepEqual(
       await runCopilotHook(
         eventName,
-        payload(eventName, fixture.transcript),
-        { ...BASE_ENV, COPILOT_HOME: fixture.copilotHome },
+        payload(eventName, "/tmp/ignored-transcript.jsonl"),
+        BASE_ENV,
         deps,
       ),
       {},
@@ -203,7 +186,7 @@ test("shadow mode classifies every Copilot-native event without mutation", async
   }
   assert.deepEqual(
     calls.filter((call) => call.text).map((call) => call.options.hook),
-    ["user_input", "tool_call", "tool_response", "tool_response", "llm_output", "llm_output"],
+    ["user_input", "tool_call", "tool_response", "tool_response", "llm_output"],
   );
   assert.ok(calls.filter((call) => call.text).every(
     (call) => call.options.metadata.silmaril.provenance.harness === "copilot",
@@ -211,7 +194,7 @@ test("shadow mode classifies every Copilot-native event without mutation", async
   assert.ok(events.every((event) => event.mode === "shadow" && event.policyDecision === "monitor"));
   assert.doesNotMatch(
     JSON.stringify(events),
-    /user prompt|tool result|tool failed|final assistant output|subagent output/u,
+    /user prompt|tool result|tool failed|subagent output/u,
   );
 });
 
@@ -352,18 +335,19 @@ test("classification and evidence failures always fail open", async () => {
   assert.deepEqual(JSON.parse(cli.stdout), {});
 });
 
-test("agent output reads only the last assistant message from a bounded Copilot transcript", async () => {
-  const fixture = await transcriptFixture();
-  assert.equal(
-    readCopilotAssistantOutput(fixture.transcript, { COPILOT_HOME: fixture.copilotHome }),
-    "final assistant output",
+test("agentStop ignores transcript paths instead of reconstructing output", async () => {
+  const transcript = path.join(await mkdtemp(path.join(os.tmpdir(), "silmaril-copilot-transcript-")), "events.jsonl");
+  await writeFile(transcript, Array.from({ length: 300 }, (_, index) => JSON.stringify({
+    type: "assistant.message",
+    data: { content: `historical output ${index}` },
+  })).join("\n"));
+  const calls: any[] = [];
+  assert.equal(buildHookTarget("agentStop", payload("agentStop", transcript)), undefined);
+  assert.deepEqual(
+    await runCopilotHook("agentStop", payload("agentStop", transcript), BASE_ENV, dependencies([], [], calls)),
+    {},
   );
-  const outside = path.join(await mkdtemp(path.join(os.tmpdir(), "silmaril-outside-")), "events.jsonl");
-  await writeFile(outside, JSON.stringify({ type: "assistant.message", data: { content: "outside" } }));
-  assert.equal(
-    readCopilotAssistantOutput(outside, { COPILOT_HOME: fixture.copilotHome }),
-    undefined,
-  );
+  assert.equal(calls.filter((call) => call.text).length, 0);
 });
 
 test("runtime check markers become the exact repair request fingerprint", () => {
@@ -421,7 +405,7 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.2.2");
+  assert.equal(packageJson.version, "0.2.3");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
