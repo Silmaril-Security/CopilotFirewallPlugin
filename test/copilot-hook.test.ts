@@ -11,6 +11,8 @@ import {
   SAFE_WARN_MESSAGE,
   buildHookTarget,
   effectiveMode,
+  governanceContext,
+  isBlockCandidate,
   readCopilotAssistantOutput,
   runCopilotHook,
   withProvenance,
@@ -36,6 +38,34 @@ const BASE_ENV = {
 test("effective mode keeps an explicit non-blocking override authoritative", () => {
   assert.equal(effectiveMode({ prediction: "MALICIOUS", mode: "block" }, "shadow"), "shadow");
   assert.equal(effectiveMode({ prediction: "MALICIOUS" }), "shadow");
+});
+
+test("governance context normalizes tool, MCP, and subagent identities", () => {
+  assert.deepEqual(governanceContext({
+    eventName: "preToolUse",
+    toolName: "bash",
+    metadata: {},
+  }), {
+    agent: "copilot",
+    resource: { kind: "tool", id: "bash" },
+  });
+  assert.deepEqual(governanceContext({
+    eventName: "preToolUse",
+    toolName: "mcp__github__create_issue",
+    metadata: {},
+  }), {
+    agent: "copilot",
+    resource: { kind: "mcp_tool", id: "create_issue", parent_id: "github" },
+  });
+  assert.deepEqual(governanceContext({
+    eventName: "subagentStop",
+    metadata: { agentType: "task" },
+  }), {
+    agent: "copilot",
+    resource: { kind: "agent", id: "task" },
+  });
+  assert.equal(isBlockCandidate({ prediction: "BENIGN", governance: { action: "block" } }), true);
+  assert.equal(isBlockCandidate({ prediction: "MALICIOUS", governance: { action: "allow" } }), true);
 });
 
 function dependencies(
@@ -223,6 +253,53 @@ test("block mode uses native deny and stop decisions without replacing tool resu
     "block_returned", "allowed", "allowed", "allowed", "block_returned",
   ]);
   assert.equal(events[1].blockUnavailable, true);
+});
+
+test("governance block uses native deny only in existing block mode", async () => {
+  const governed = {
+    prediction: "BENIGN",
+    governance: { action: "block", rule_id: "block-tool", policy_version: "v1" },
+  };
+
+  assert.deepEqual(
+    await runCopilotHook(
+      "preToolUse",
+      payload("preToolUse"),
+      { ...BASE_ENV, SILMARIL_MODE: "shadow" },
+      dependencies([governed]),
+    ),
+    {},
+  );
+  const warned = await runCopilotHook(
+    "preToolUse",
+    payload("preToolUse"),
+    { ...BASE_ENV, SILMARIL_MODE: "warn" },
+    dependencies([governed]),
+  );
+  assert.equal(warned.permissionDecision, undefined);
+  assert.equal(warned.additionalContext, SAFE_WARN_MESSAGE);
+
+  assert.deepEqual(
+    await runCopilotHook(
+      "preToolUse",
+      payload("preToolUse"),
+      { ...BASE_ENV, SILMARIL_MODE: "block" },
+      dependencies([governed]),
+    ),
+    {
+      permissionDecision: "deny",
+      permissionDecisionReason: SAFE_BLOCK_MESSAGE,
+    },
+  );
+  assert.deepEqual(
+    await runCopilotHook(
+      "postToolUse",
+      payload("postToolUse"),
+      { ...BASE_ENV, SILMARIL_MODE: "block" },
+      dependencies([governed]),
+    ),
+    {},
+  );
 });
 
 test("warn mode surfaces one bounded warning only on supported context hooks", async () => {

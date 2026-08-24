@@ -1300,13 +1300,17 @@ async function runCopilotHook(eventName, input, env = process.env, dependencies 
       hook: target.firewallHook,
       ...target.toolName ? { toolName: target.toolName } : {},
       requestId: target.requestId,
-      metadata: withProvenance(target.metadata, config.endpointId)
+      metadata: withProvenance(
+        target.metadata,
+        config.endpointId,
+        governanceContext(target)
+      )
     });
   } catch (error) {
     debugLog(config, "classification_error", target.eventName, error);
     return {};
   }
-  const malicious = result.prediction === "MALICIOUS";
+  const malicious = isBlockCandidate(result);
   const mode = effectiveMode(result, config.mode);
   const enforce = mode === "block" && malicious && target.enforceable !== "none";
   const warn = mode === "warn" && malicious && target.warnable;
@@ -1459,7 +1463,7 @@ function readCopilotAssistantOutput(transcriptPath, env = process.env) {
     return void 0;
   }
 }
-function withProvenance(metadata, endpointId2) {
+function withProvenance(metadata, endpointId2, governance) {
   const silmaril = readRecord(metadata.silmaril) ?? {};
   return {
     ...metadata,
@@ -1469,9 +1473,37 @@ function withProvenance(metadata, endpointId2) {
         schema_version: 1,
         endpoint_id: endpointId2,
         harness: "copilot"
-      })
+      }),
+      ...governance ? { governance } : {}
     }
   };
+}
+function governanceContext(target) {
+  if (target.eventName === "preToolUse" || target.eventName === "postToolUse" || target.eventName === "postToolUseFailure") {
+    const toolName = target.toolName ?? "unknown";
+    const mcp = parseMcpToolName(toolName);
+    return {
+      agent: "copilot",
+      resource: mcp ? { kind: "mcp_tool", id: mcp.toolId, parent_id: mcp.serverId } : { kind: "tool", id: toolName }
+    };
+  }
+  return {
+    agent: "copilot",
+    resource: {
+      kind: "agent",
+      id: readString(target.metadata.agentType) ?? "copilot"
+    }
+  };
+}
+function isBlockCandidate(result) {
+  return result.prediction === "MALICIOUS" || readRecord(result.governance)?.action === "block";
+}
+function parseMcpToolName(toolName) {
+  const canonical = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  if (canonical?.[1] && canonical[2]) {
+    return { serverId: canonical[1], toolId: canonical[2] };
+  }
+  return void 0;
 }
 function stableStringify(value) {
   if (value === void 0 || value === null) return "";
@@ -1551,6 +1583,8 @@ export {
   SAFE_WARN_MESSAGE,
   buildHookTarget,
   effectiveMode,
+  governanceContext,
+  isBlockCandidate,
   readCopilotAssistantOutput,
   runCopilotHook,
   stableStringify,
