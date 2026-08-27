@@ -198,7 +198,7 @@ test("shadow mode classifies only events with current native content", async () 
   );
 });
 
-test("block mode uses native deny and stop decisions without replacing tool results", async () => {
+test("block mode uses native deny, replacement, and stop decisions", async () => {
   const malicious = { prediction: "MALICIOUS", primaryOutcome: "code_execution" };
   const env = { ...BASE_ENV, SILMARIL_BLOCK_MALICIOUS: "true" };
   const events: any[] = [];
@@ -218,7 +218,14 @@ test("block mode uses native deny and stop decisions without replacing tool resu
     env,
     dependencies([malicious], events),
   );
-  assert.deepEqual(postTool, {});
+  assert.deepEqual(postTool, {
+    modifiedResult: {
+      resultType: "success",
+      textResultForLlm: SAFE_BLOCK_MESSAGE,
+    },
+    additionalContext: SAFE_BLOCK_MESSAGE,
+  });
+  assert.doesNotMatch(JSON.stringify(postTool), /tool result/u);
   for (const eventName of ["userPromptSubmitted", "postToolUseFailure"] as const) {
     assert.deepEqual(
       await runCopilotHook(eventName, payload(eventName), env, dependencies([malicious], events)),
@@ -230,12 +237,13 @@ test("block mode uses native deny and stop decisions without replacing tool resu
     { decision: "block", reason: SAFE_BLOCK_MESSAGE },
   );
   assert.deepEqual(events.map((event) => event.policyDecision), [
-    "block", "monitor", "monitor", "monitor", "block",
+    "block", "block", "monitor", "monitor", "block",
   ]);
   assert.deepEqual(events.map((event) => event.nativeAction), [
-    "block_returned", "allowed", "allowed", "allowed", "block_returned",
+    "block_returned", "content_replaced", "allowed", "allowed", "block_returned",
   ]);
-  assert.equal(events[1].blockUnavailable, true);
+  assert.equal(events[1].blockUnavailable, undefined);
+  assert.equal(events[1].evidenceTruth, "native_response_returned");
 });
 
 test("governance block uses native deny only in existing block mode", async () => {
@@ -281,7 +289,13 @@ test("governance block uses native deny only in existing block mode", async () =
       { ...BASE_ENV, SILMARIL_MODE: "block" },
       dependencies([governed]),
     ),
-    {},
+    {
+      modifiedResult: {
+        resultType: "success",
+        textResultForLlm: SAFE_BLOCK_MESSAGE,
+      },
+      additionalContext: SAFE_BLOCK_MESSAGE,
+    },
   );
 });
 
@@ -405,7 +419,7 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.2.3");
+  assert.equal(packageJson.version, "0.2.4");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");

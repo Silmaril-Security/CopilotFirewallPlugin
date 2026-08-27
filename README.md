@@ -2,7 +2,7 @@
 
 Silmaril Firewall protection for GitHub Copilot CLI.
 
-The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, and subagent responses from their current native hook payloads. Shadow records backend evidence only. Warn preserves content and adds one bounded content-free warning at supported same-turn context surfaces. Block uses Copilot-native deny or stop responses where available; it never replaces completed content.
+The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, and subagent responses from their current native hook payloads. Shadow records backend evidence only. Warn preserves content and adds one bounded content-free warning at supported same-turn context surfaces. Block uses Copilot-native deny and stop responses, and replaces malicious tool results with fixed content before they reach the model.
 
 ## Install
 

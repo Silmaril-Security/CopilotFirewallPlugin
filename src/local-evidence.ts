@@ -8,7 +8,7 @@ const MAX_SAFE_VALUE_LENGTH = 128;
 
 export type ProtectionHook = "user_input" | "pre_tool" | "post_tool" | "tool_result" | "llm_output" | "subagent" | "unknown";
 export type ProtectionCategory = "credential_exposure" | "sensitive_data_exposure" | "code_execution" | "destructive_change" | "external_communication" | "privilege_change" | "unsafe_agent_control" | "other" | "unknown";
-export type NativeAction = "none" | "allowed" | "block_returned" | "warning_context_returned" | "failed" | "unavailable";
+export type NativeAction = "none" | "allowed" | "block_returned" | "content_replaced" | "warning_context_returned" | "failed" | "unavailable";
 
 export type LocalProtectionEventV1 = {
   schemaVersion: 1;
@@ -76,7 +76,8 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
   const riskClass = normalizeCategory(
     input.classification.primaryOutcome ?? input.classification.primary_outcome,
   );
-  const nativeResponseReturned = input.nativeAction === "block_returned";
+  const nativeResponseReturned = input.nativeAction === "block_returned"
+    || input.nativeAction === "content_replaced";
   return omitUndefined({
     schemaVersion: 1,
     id: `event-${sha256([
