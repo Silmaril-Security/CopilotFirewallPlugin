@@ -1316,6 +1316,88 @@ function booleanValue(value) {
   return typeof value === "boolean" ? value : void 0;
 }
 
+// src/mac-computer-name.ts
+import { spawnSync } from "node:child_process";
+var COMPUTER_NAME_COMMAND = "/usr/sbin/scutil";
+var COMPUTER_NAME_ARGS = ["--get", "ComputerName"];
+var LOOKUP_TIMEOUT_MS = 100;
+var MAX_OUTPUT_BYTES = 1024;
+var MAX_NAME_UNITS = 256;
+var CACHE_TTL_MS = 5 * 60 * 1e3;
+var CONTROL_CHARS = /[\u0000-\u001F\u007F]/u;
+function sanitizeDeviceName(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_NAME_UNITS || CONTROL_CHARS.test(trimmed)) return void 0;
+  return trimmed;
+}
+function createMacComputerNameSource(options = {}) {
+  const platform = options.platform ?? (() => process.platform);
+  const now = options.now ?? Date.now;
+  const spawn = options.spawn ?? defaultSpawn;
+  let cache;
+  return () => {
+    try {
+      if (platform() !== "darwin") return void 0;
+      const current = now();
+      if (cache && Number.isFinite(current) && current < cache.expiresAt) return cache.value;
+      const value = readComputerName(spawn);
+      if (Number.isFinite(current)) cache = { value, expiresAt: current + CACHE_TTL_MS };
+      return value;
+    } catch {
+      return void 0;
+    }
+  };
+}
+var readCachedMacComputerName = createMacComputerNameSource();
+function resolvePluginDeviceName(read) {
+  try {
+    return sanitizeDeviceName((read ?? readCachedMacComputerName)());
+  } catch {
+    return void 0;
+  }
+}
+function readComputerName(spawn) {
+  try {
+    const result = spawn(COMPUTER_NAME_COMMAND, COMPUTER_NAME_ARGS, {
+      timeout: LOOKUP_TIMEOUT_MS,
+      maxBuffer: MAX_OUTPUT_BYTES,
+      encoding: "buffer",
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    if (result.error || result.status !== 0) return void 0;
+    const stdout = asBuffer(result.stdout);
+    if (!stdout || stdout.byteLength > MAX_OUTPUT_BYTES) return void 0;
+    const decoded = decodeUtf8(stdout);
+    if (decoded === void 0) return void 0;
+    return sanitizeDeviceName(decoded);
+  } catch {
+    return void 0;
+  }
+}
+function defaultSpawn(command, args, options) {
+  const result = spawnSync(command, [...args], options);
+  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout : null;
+  return {
+    status: result.status,
+    ...stdout ? { stdout } : {},
+    ...result.error ? { error: result.error } : {}
+  };
+}
+function asBuffer(stdout) {
+  if (stdout == null) return void 0;
+  return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+}
+function decodeUtf8(stdout) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+  } catch {
+    return void 0;
+  }
+}
+
 // src/copilot-hook.ts
 var PLUGIN_NAME = "silmaril-firewall";
 var PLUGIN_VERSION = "0.2.4";
@@ -1330,6 +1412,7 @@ async function runCopilotHook(eventName, input, env = process.env, dependencies 
   if (!config) return {};
   const target = buildHookTarget(eventName, input);
   if (!target) return {};
+  const deviceName = resolvePluginDeviceName(dependencies.deviceName);
   let result;
   try {
     const client = new dependencies.firewallConstructor({
@@ -1345,7 +1428,8 @@ async function runCopilotHook(eventName, input, env = process.env, dependencies 
       metadata: withProvenance(
         target.metadata,
         config.endpointId,
-        governanceContext(target)
+        governanceContext(target),
+        deviceName
       )
     });
   } catch (error) {
@@ -1481,7 +1565,7 @@ function effectiveMode(result, requestedMode) {
   const returned = result.mode;
   return requestedMode ?? (returned === "shadow" || returned === "warn" || returned === "block" ? returned : "shadow");
 }
-function withProvenance(metadata, endpointId2, governance) {
+function withProvenance(metadata, endpointId2, governance, deviceName) {
   const silmaril = readRecord(metadata.silmaril) ?? {};
   return {
     ...metadata,
@@ -1490,7 +1574,8 @@ function withProvenance(metadata, endpointId2, governance) {
       provenance: omitUndefined2({
         schema_version: 1,
         endpoint_id: endpointId2,
-        harness: "copilot"
+        harness: "copilot",
+        device_name: sanitizeDeviceName(deviceName)
       }),
       ...governance ? { governance } : {}
     }
