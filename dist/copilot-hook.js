@@ -1318,31 +1318,49 @@ function booleanValue(value) {
 
 // src/mac-computer-name.ts
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { chmodSync, lstatSync, mkdirSync, readFileSync as readFileSync2, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import path3 from "node:path";
 var COMPUTER_NAME_COMMAND = "/usr/sbin/scutil";
 var COMPUTER_NAME_ARGS = ["--get", "ComputerName"];
 var LOOKUP_TIMEOUT_MS = 100;
 var MAX_OUTPUT_BYTES = 1024;
 var MAX_NAME_UNITS = 256;
 var CACHE_TTL_MS = 5 * 60 * 1e3;
-var CONTROL_CHARS = /[\u0000-\u001F\u007F]/u;
+var MAX_CACHE_BYTES = 4 * 1024;
+var CACHE_FILE_NAME = "cache.json";
+var CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/u;
 function sanitizeDeviceName(value) {
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > MAX_NAME_UNITS || CONTROL_CHARS.test(trimmed)) return void 0;
   return trimmed;
 }
+function computerNameCachePath(cacheDirectory) {
+  return path3.join(cacheDirectory, CACHE_FILE_NAME);
+}
 function createMacComputerNameSource(options = {}) {
   const platform = options.platform ?? (() => process.platform);
   const now = options.now ?? Date.now;
   const spawn = options.spawn ?? defaultSpawn;
+  const cacheDirectory = options.cacheDirectory ?? defaultCacheDirectory();
   let cache;
   return () => {
     try {
       if (platform() !== "darwin") return void 0;
       const current = now();
-      if (cache && Number.isFinite(current) && current < cache.expiresAt) return cache.value;
+      if (!Number.isFinite(current)) return readComputerName(spawn);
+      if (cache && current < cache.expiresAt) return cache.value;
+      const stored = readCache(cacheDirectory, current);
+      if (stored) {
+        cache = stored;
+        return stored.value;
+      }
       const value = readComputerName(spawn);
-      if (Number.isFinite(current)) cache = { value, expiresAt: current + CACHE_TTL_MS };
+      const entry = { value, expiresAt: current + CACHE_TTL_MS };
+      cache = entry;
+      writeCache(cacheDirectory, entry);
       return value;
     } catch {
       return void 0;
@@ -1356,6 +1374,10 @@ function resolvePluginDeviceName(read) {
   } catch {
     return void 0;
   }
+}
+function defaultCacheDirectory() {
+  const home = process.env.HOME?.trim() || homedir3();
+  return path3.join(home, "Library", "Application Support", "Silmaril", "ComputerName");
 }
 function readComputerName(spawn) {
   try {
@@ -1376,6 +1398,62 @@ function readComputerName(spawn) {
   } catch {
     return void 0;
   }
+}
+function readCache(cacheDirectory, current) {
+  try {
+    if (!trustedDirectory(cacheDirectory)) return void 0;
+    const filePath = computerNameCachePath(cacheDirectory);
+    const info = lstatSync(filePath);
+    const uid = currentUid();
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_CACHE_BYTES || uid !== void 0 && info.uid !== uid || (info.mode & 63) !== 0) return void 0;
+    const parsed = JSON.parse(readFileSync2(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return void 0;
+    const record = parsed;
+    if (typeof record.expiresAt !== "number" || !Number.isFinite(record.expiresAt) || current >= record.expiresAt) {
+      return void 0;
+    }
+    if (record.name === null) return { value: void 0, expiresAt: record.expiresAt };
+    const name = sanitizeDeviceName(record.name);
+    if (!name) return void 0;
+    return { value: name, expiresAt: record.expiresAt };
+  } catch {
+    return void 0;
+  }
+}
+function writeCache(cacheDirectory, entry) {
+  const temporary = path3.join(cacheDirectory, `.cache.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  try {
+    mkdirSync(cacheDirectory, { recursive: true, mode: 448 });
+    if (!trustedDirectory(cacheDirectory)) return;
+    chmodSync(cacheDirectory, 448);
+    const filePath = computerNameCachePath(cacheDirectory);
+    try {
+      if (lstatSync(filePath).isSymbolicLink()) rmSync(filePath);
+    } catch {
+    }
+    const body = JSON.stringify({ expiresAt: entry.expiresAt, name: entry.value ?? null });
+    if (Buffer.byteLength(body) > MAX_CACHE_BYTES) return;
+    writeFileSync(temporary, body, { encoding: "utf8", mode: 384, flag: "wx" });
+    renameSync(temporary, filePath);
+    chmodSync(filePath, 384);
+  } catch {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+    }
+  }
+}
+function trustedDirectory(cacheDirectory) {
+  try {
+    const info = lstatSync(cacheDirectory);
+    const uid = currentUid();
+    return info.isDirectory() && !info.isSymbolicLink() && (uid === void 0 || info.uid === uid);
+  } catch {
+    return false;
+  }
+}
+function currentUid() {
+  return typeof process.getuid === "function" ? process.getuid() : void 0;
 }
 function defaultSpawn(command, args, options) {
   const result = spawnSync(command, [...args], options);

@@ -490,16 +490,18 @@ test("invalid or failed device-name lookup still classifies and drops spoofed me
       }),
       {},
     );
-    assert.deepEqual(
-      await runCopilotHook("preToolUse", payload("preToolUse"), env, {
-        ...dependencies([{ prediction: "BENIGN" }], events, calls),
-        deviceName: () => "Office\u0000Mac",
-      }),
-      {},
-    );
+    for (const deviceName of ["Office\u0000Mac", "Office\u007FMac", "Office\u0085Mac"]) {
+      assert.deepEqual(
+        await runCopilotHook("preToolUse", payload("preToolUse"), env, {
+          ...dependencies([{ prediction: "BENIGN" }], events, calls),
+          deviceName: () => deviceName,
+        }),
+        {},
+      );
+    }
   });
   const provenances = calls.filter((call) => call.text).map((call) => call.options.metadata.silmaril.provenance);
-  assert.equal(provenances.length, 2);
+  assert.equal(provenances.length, 4);
   assert.ok(provenances.every((provenance: { device_name?: string; harness: string; endpoint_id: string }) => (
     provenance.device_name === undefined
     && provenance.harness === "copilot"
