@@ -380,7 +380,7 @@ test("runtime check markers become the exact repair request fingerprint", () => 
 test("provenance is plugin-owned and local evidence is private and raw-content free", async () => {
   assert.deepEqual(withProvenance({
     trace: "keep",
-    silmaril: { provenance: { harness: "spoofed" } },
+    silmaril: { provenance: { harness: "spoofed", device_name: "spoofed-host" } },
   }, "2b64e603-f82a-4aec-9524-9736472dc80a"), {
     trace: "keep",
     silmaril: {
@@ -388,6 +388,20 @@ test("provenance is plugin-owned and local evidence is private and raw-content f
         schema_version: 1,
         endpoint_id: "2b64e603-f82a-4aec-9524-9736472dc80a",
         harness: "copilot",
+      },
+    },
+  });
+  assert.deepEqual(withProvenance({
+    trace: "keep",
+    silmaril: { integration: "silmaril-firewall", provenance: { device_name: "spoofed-host", endpoint_id: "spoofed" } },
+  }, undefined, undefined, "  Office Mac \n"), {
+    trace: "keep",
+    silmaril: {
+      integration: "silmaril-firewall",
+      provenance: {
+        schema_version: 1,
+        harness: "copilot",
+        device_name: "Office Mac",
       },
     },
   });
@@ -433,3 +447,81 @@ test("manifests are Copilot-native and version aligned", async () => {
     "subagentStop",
   ]);
 });
+
+test("classify metadata includes the mac computer name without an endpoint id", async () => {
+  const calls: any[] = [];
+  const events: any[] = [];
+  const env: Record<string, string> = { ...BASE_ENV, SILMARIL_DEBUG: "true" };
+  delete env.SILMARIL_ENDPOINT_ID;
+  const stderr = await captureStderr(async () => {
+    assert.deepEqual(
+      await runCopilotHook("userPromptSubmitted", payload("userPromptSubmitted"), env, {
+        ...dependencies([{ prediction: "BENIGN" }], events, calls),
+        deviceName: () => "  Office Mac \n",
+      }),
+      {},
+    );
+  });
+  const metadata = calls.find((call) => call.text).options.metadata;
+  assert.deepEqual(metadata.silmaril.provenance, {
+    schema_version: 1,
+    harness: "copilot",
+    device_name: "Office Mac",
+  });
+  assert.deepEqual(metadata.silmaril.governance, {
+    agent: "copilot",
+    resource: { kind: "agent", id: "copilot" },
+  });
+  assert.doesNotMatch(JSON.stringify(events), /Office Mac/u);
+  assert.doesNotMatch(stderr, /Office Mac/u);
+});
+
+test("invalid or failed device-name lookup still classifies and drops spoofed metadata", async () => {
+  const calls: any[] = [];
+  const events: any[] = [];
+  const env = { ...BASE_ENV, SILMARIL_DEBUG: "true" };
+  const stderr = await captureStderr(async () => {
+    assert.deepEqual(
+      await runCopilotHook("userPromptSubmitted", payload("userPromptSubmitted"), env, {
+        ...dependencies([{ prediction: "BENIGN" }], events, calls),
+        deviceName: () => {
+          throw new Error("scutil failed for Office Mac");
+        },
+      }),
+      {},
+    );
+    for (const deviceName of ["Office\u0000Mac", "Office\u007FMac", "Office\u0085Mac"]) {
+      assert.deepEqual(
+        await runCopilotHook("preToolUse", payload("preToolUse"), env, {
+          ...dependencies([{ prediction: "BENIGN" }], events, calls),
+          deviceName: () => deviceName,
+        }),
+        {},
+      );
+    }
+  });
+  const provenances = calls.filter((call) => call.text).map((call) => call.options.metadata.silmaril.provenance);
+  assert.equal(provenances.length, 4);
+  assert.ok(provenances.every((provenance: { device_name?: string; harness: string; endpoint_id: string }) => (
+    provenance.device_name === undefined
+    && provenance.harness === "copilot"
+    && provenance.endpoint_id === "2b64e603-f82a-4aec-9524-9736472dc80a"
+  )));
+  assert.doesNotMatch(JSON.stringify(events), /Office Mac/u);
+  assert.doesNotMatch(stderr, /Office Mac/u);
+});
+
+async function captureStderr(run: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await run();
+  } finally {
+    process.stderr.write = original;
+  }
+  return chunks.join("");
+}

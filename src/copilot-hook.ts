@@ -16,6 +16,7 @@ import {
   type RuntimeEnv,
   type FirewallMode,
 } from "./runtime-config.ts";
+import { resolvePluginDeviceName, sanitizeDeviceName } from "./mac-computer-name.ts";
 
 export const PLUGIN_NAME = "silmaril-firewall";
 export const PLUGIN_VERSION = "0.2.4";
@@ -68,6 +69,7 @@ type HookTarget = {
 export type RuntimeDependencies = {
   firewallConstructor: FirewallConstructor;
   evidenceEmitter: (event: LocalProtectionEventV1, env: RuntimeEnv) => Promise<unknown>;
+  deviceName?: () => string | undefined;
 };
 
 export async function runCopilotHook(
@@ -84,6 +86,7 @@ export async function runCopilotHook(
   const target = buildHookTarget(eventName, input);
   if (!target) return {};
 
+  const deviceName = resolvePluginDeviceName(dependencies.deviceName);
   let result: ClassificationResult;
   try {
     const client = new dependencies.firewallConstructor({
@@ -100,6 +103,7 @@ export async function runCopilotHook(
         target.metadata,
         config.endpointId,
         governanceContext(target),
+        deviceName,
       ),
     });
   } catch (error) {
@@ -261,6 +265,7 @@ export function withProvenance(
   metadata: Record<string, unknown>,
   endpointId?: string,
   governance?: GovernanceContext,
+  deviceName?: string,
 ): Record<string, unknown> {
   const silmaril = readRecord(metadata.silmaril) ?? {};
   return {
@@ -271,6 +276,7 @@ export function withProvenance(
         schema_version: 1,
         endpoint_id: endpointId,
         harness: "copilot",
+        device_name: sanitizeDeviceName(deviceName),
       }),
       ...(governance ? { governance } : {}),
     },
