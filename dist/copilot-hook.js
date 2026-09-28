@@ -1328,6 +1328,7 @@ var LOOKUP_TIMEOUT_MS = 100;
 var MAX_OUTPUT_BYTES = 1024;
 var MAX_NAME_UNITS = 256;
 var CACHE_TTL_MS = 5 * 60 * 1e3;
+var CACHE_TIME_SKEW_MS = 2e3;
 var MAX_CACHE_BYTES = 4 * 1024;
 var CACHE_FILE_NAME = "cache.json";
 var CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/u;
@@ -1351,16 +1352,27 @@ function createMacComputerNameSource(options = {}) {
       if (platform() !== "darwin") return void 0;
       const current = now();
       if (!Number.isFinite(current)) return readComputerName(spawn);
-      if (cache && current < cache.expiresAt) return cache.value;
+      if (cache && freshMemoryCache(cache, current)) return cache.value;
       const stored = readCache(cacheDirectory, current);
       if (stored) {
         cache = stored;
         return stored.value;
       }
       const value = readComputerName(spawn);
-      const entry = { value, expiresAt: current + CACHE_TTL_MS };
+      if (value === void 0) {
+        const newer = freshSuccess(cacheDirectory, current);
+        if (newer) {
+          cache = newer;
+          return newer.value;
+        }
+      }
+      const entry = { value, cachedAt: current, expiresAt: current + CACHE_TTL_MS };
+      const kept = writeCache(cacheDirectory, entry, current);
+      if (kept) {
+        cache = kept;
+        return kept.value;
+      }
       cache = entry;
-      writeCache(cacheDirectory, entry);
       return value;
     } catch {
       return void 0;
@@ -1409,22 +1421,50 @@ function readCache(cacheDirectory, current) {
     const parsed = JSON.parse(readFileSync2(filePath, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return void 0;
     const record = parsed;
-    if (typeof record.expiresAt !== "number" || !Number.isFinite(record.expiresAt) || current >= record.expiresAt) {
-      return void 0;
-    }
-    if (record.name === null) return { value: void 0, expiresAt: record.expiresAt };
+    const times = fileTimes(info);
+    if (!times) return void 0;
+    const expiresAt = boundedExpiry(record.expiresAt, current, times);
+    if (expiresAt === void 0) return void 0;
+    if (record.name === null) return { value: void 0, cachedAt: current, expiresAt };
     const name = sanitizeDeviceName(record.name);
     if (!name) return void 0;
-    return { value: name, expiresAt: record.expiresAt };
+    return { value: name, cachedAt: current, expiresAt };
   } catch {
     return void 0;
   }
 }
-function writeCache(cacheDirectory, entry) {
+function freshMemoryCache(cache, current) {
+  return current >= cache.cachedAt && current < cache.expiresAt && current - cache.cachedAt < CACHE_TTL_MS;
+}
+function freshSuccess(cacheDirectory, current) {
+  const stored = readCache(cacheDirectory, current);
+  if (!stored?.value) return void 0;
+  return stored;
+}
+function fileTimes(info) {
+  if (!info) return void 0;
+  const mtimeMs = typeof info.mtimeMs === "number" ? info.mtimeMs : Number(info.mtimeMs);
+  const ctimeMs = typeof info.ctimeMs === "number" ? info.ctimeMs : Number(info.ctimeMs);
+  const birthtimeMs = typeof info.birthtimeMs === "number" ? info.birthtimeMs : Number(info.birthtimeMs);
+  if (![mtimeMs, ctimeMs, birthtimeMs].every(Number.isFinite)) return void 0;
+  return { mtimeMs, ctimeMs, birthtimeMs };
+}
+function boundedExpiry(value, current, times) {
+  if (typeof value !== "number" || !Number.isFinite(value) || current >= value) return void 0;
+  if (value > current + CACHE_TTL_MS) return void 0;
+  const stamps = [times.mtimeMs, times.ctimeMs];
+  if (times.birthtimeMs > 0) stamps.push(times.birthtimeMs);
+  if (stamps.some((stamp) => stamp > current + CACHE_TIME_SKEW_MS)) return void 0;
+  const oldest = Math.min(...stamps);
+  if (current - oldest >= CACHE_TTL_MS) return void 0;
+  if (value > oldest + CACHE_TTL_MS + CACHE_TIME_SKEW_MS) return void 0;
+  return Math.min(value, oldest + CACHE_TTL_MS);
+}
+function writeCache(cacheDirectory, entry, current) {
   const temporary = path3.join(cacheDirectory, `.cache.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
     mkdirSync(cacheDirectory, { recursive: true, mode: 448 });
-    if (!trustedDirectory(cacheDirectory)) return;
+    if (!trustedDirectory(cacheDirectory)) return void 0;
     chmodSync(cacheDirectory, 448);
     const filePath = computerNameCachePath(cacheDirectory);
     try {
@@ -1432,15 +1472,24 @@ function writeCache(cacheDirectory, entry) {
     } catch {
     }
     const body = JSON.stringify({ expiresAt: entry.expiresAt, name: entry.value ?? null });
-    if (Buffer.byteLength(body) > MAX_CACHE_BYTES) return;
+    if (Buffer.byteLength(body) > MAX_CACHE_BYTES) return void 0;
     writeFileSync(temporary, body, { encoding: "utf8", mode: 384, flag: "wx" });
+    if (entry.value === void 0) {
+      const newer = freshSuccess(cacheDirectory, current);
+      if (newer) {
+        rmSync(temporary, { force: true });
+        return newer;
+      }
+    }
     renameSync(temporary, filePath);
     chmodSync(filePath, 384);
+    return void 0;
   } catch {
     try {
       rmSync(temporary, { force: true });
     } catch {
     }
+    return void 0;
   }
 }
 function trustedDirectory(cacheDirectory) {
