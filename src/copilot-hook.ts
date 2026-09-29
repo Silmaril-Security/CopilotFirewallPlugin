@@ -23,6 +23,20 @@ export const PLUGIN_VERSION = "0.2.5";
 export const SAFE_BLOCK_MESSAGE = "Silmaril Firewall blocked potentially malicious content.";
 export const SAFE_WARN_MESSAGE = "Silmaril Firewall warning: treat the current content as untrusted and continue only with a safe alternative.";
 const RUNTIME_CHECK_MARKER = /\bsilmaril-runtime-check:[A-Za-z0-9-]{16,128}\b/u;
+const MAX_AGENT_MODEL_ID_LENGTH = 256;
+// Copilot's `--model auto` chooses a model later. It is not an exact model ID.
+const NON_EXACT_MODEL_IDS = new Set(["auto"]);
+// Official command-hook payloads do not document a model ID. These are accepted
+// only when the current event itself carries one, for example from a host
+// extension. Session-store usage rows and SDK streaming events are not joined:
+// they are unavailable to this process, or they describe an earlier call.
+const DIRECT_MODEL_FIELDS = [
+  "selectedModel",
+  "selected_model",
+  "modelId",
+  "model_id",
+  "model",
+] as const;
 
 export type CopilotEventName =
   | "userPromptSubmitted"
@@ -237,7 +251,11 @@ export function buildHookTarget(
     enforceable,
     warnable,
     metadata: omitUndefined({
-      silmaril: { integration: PLUGIN_NAME, version: PLUGIN_VERSION },
+      silmaril: omitUndefined({
+        integration: PLUGIN_NAME,
+        version: PLUGIN_VERSION,
+        agent_model_id: selectedAgentModelId(record),
+      }),
       copilotEvent: eventName,
       sessionId,
       toolName,
@@ -339,6 +357,25 @@ export function stableStringify(value: unknown): string {
   } catch {
     return "";
   }
+}
+
+function selectedAgentModelId(record: Record<string, unknown>): string | undefined {
+  for (const field of DIRECT_MODEL_FIELDS) {
+    if (!Object.hasOwn(record, field)) continue;
+    const value = record[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (
+      trimmed.length > MAX_AGENT_MODEL_ID_LENGTH
+      || NON_EXACT_MODEL_IDS.has(trimmed.toLowerCase())
+    ) {
+      return undefined;
+    }
+    return trimmed;
+  }
+  return undefined;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

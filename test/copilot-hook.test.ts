@@ -429,6 +429,157 @@ test("provenance is plugin-owned and local evidence is private and raw-content f
   assert.equal((await stat(root)).mode & 0o777, 0o700);
 });
 
+function agentModelId(call: { options?: { metadata?: { silmaril?: Record<string, unknown> } } }): unknown {
+  return call.options?.metadata?.silmaril?.agent_model_id;
+}
+
+test("official hook payloads omit agent_model_id", async () => {
+  const calls: any[] = [];
+  const events: any[] = [];
+  const eventNames: CopilotEventName[] = [
+    "userPromptSubmitted",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "subagentStop",
+  ];
+  const deps = dependencies(
+    eventNames.map(() => ({ prediction: "BENIGN", model_id: "firewall-classifier" })),
+    events,
+    calls,
+  );
+  for (const eventName of eventNames) {
+    const input = {
+      ...payload(eventName),
+      prompt: "use model gpt-5.4",
+      toolArgs: { command: "pwd", model: "gpt-5.4", selectedModel: "gpt-5.4" },
+      silmaril: { agent_model_id: "spoofed-model" },
+    };
+    assert.deepEqual(await runCopilotHook(eventName, input, {
+      ...BASE_ENV,
+      COPILOT_MODEL: "gpt-5-from-config",
+    }, deps), {});
+  }
+  const classified = calls.filter((call) => call.text);
+  assert.equal(classified.length, eventNames.length);
+  assert.ok(classified.every((call) => Object.hasOwn(call.options.metadata.silmaril, "agent_model_id") === false));
+  assert.ok(events.every((event) => event.provenance.modelVersion === "firewall-classifier"));
+  assert.doesNotMatch(JSON.stringify(events), /gpt-5\.4|spoofed-model|gpt-5-from-config/u);
+});
+
+test("a direct host model id is attributed only to that event", async () => {
+  const calls: any[] = [];
+  const events: any[] = [];
+  const cases = [
+    { selectedModel: "  gpt-5.4  " },
+    { selected_model: "claude-sonnet-4" },
+    { modelId: "gpt-5.3-codex" },
+    { model_id: "gpt-4.1", model: "ignored-lower-precedence" },
+    { model: "gpt-5-mini" },
+  ];
+  const deps = dependencies(
+    cases.map(() => ({ prediction: "BENIGN", model_id: "firewall-classifier" })),
+    events,
+    calls,
+  );
+  for (const extra of cases) {
+    await runCopilotHook("preToolUse", { ...payload("preToolUse"), ...extra }, BASE_ENV, deps);
+  }
+  assert.deepEqual(calls.filter((call) => call.text).map(agentModelId), [
+    "gpt-5.4",
+    "claude-sonnet-4",
+    "gpt-5.3-codex",
+    "gpt-4.1",
+    "gpt-5-mini",
+  ]);
+  assert.ok(events.every((event) => event.provenance.modelVersion === "firewall-classifier"));
+
+  const omitted: any[] = [];
+  for (const extra of [
+    { selectedModel: "auto", model: "gpt-5.4" },
+    { selectedModel: " AUTO " },
+    { selectedModel: "" },
+    { selectedModel: "   " },
+    { model: { id: "gpt-5.4" } },
+    { model: 5 },
+    { selectedModel: "x".repeat(257), model: "gpt-5.4" },
+    { newModel: "gpt-5.4", previousModel: "gpt-4.1", currentModel: "gpt-5.4" },
+  ]) {
+    const target = buildHookTarget("userPromptSubmitted", { ...payload("userPromptSubmitted"), ...extra });
+    omitted.push(target?.metadata.silmaril);
+  }
+  assert.ok(omitted.every((silmaril) => silmaril && Object.hasOwn(silmaril, "agent_model_id") === false));
+});
+
+test("model ids do not stick across events, sessions, or subagents", async () => {
+  const calls: any[] = [];
+  const deps = dependencies([
+    { prediction: "BENIGN" },
+    { prediction: "BENIGN" },
+    { prediction: "BENIGN" },
+    { prediction: "BENIGN" },
+  ], [], calls);
+  await runCopilotHook("userPromptSubmitted", {
+    ...payload("userPromptSubmitted"),
+    selectedModel: "gpt-5.4",
+  }, BASE_ENV, deps);
+  await runCopilotHook("preToolUse", {
+    ...payload("preToolUse"),
+    sessionId: "session-2",
+    selectedModel: "claude-sonnet-4",
+  }, BASE_ENV, deps);
+  await runCopilotHook("postToolUse", payload("postToolUse"), BASE_ENV, deps);
+  await runCopilotHook("subagentStop", {
+    ...payload("subagentStop"),
+    model: "gpt-5-mini",
+  }, BASE_ENV, deps);
+  assert.deepEqual(calls.filter((call) => call.text).map(agentModelId), [
+    "gpt-5.4",
+    "claude-sonnet-4",
+    undefined,
+    "gpt-5-mini",
+  ]);
+});
+
+test("model attribution does not change native enforcement", async () => {
+  const malicious = { prediction: "MALICIOUS", model_id: "firewall-classifier" };
+  const blockEnv = { ...BASE_ENV, SILMARIL_BLOCK_MALICIOUS: "true", COPILOT_MODEL: "gpt-5-from-config" };
+  const withModel = await runCopilotHook(
+    "preToolUse",
+    { ...payload("preToolUse"), selectedModel: "gpt-5.4" },
+    blockEnv,
+    dependencies([malicious]),
+  );
+  const withoutModel = await runCopilotHook(
+    "preToolUse",
+    payload("preToolUse"),
+    blockEnv,
+    dependencies([malicious]),
+  );
+  assert.deepEqual(withModel, {
+    permissionDecision: "deny",
+    permissionDecisionReason: SAFE_BLOCK_MESSAGE,
+  });
+  assert.deepEqual(withoutModel, withModel);
+  assert.doesNotMatch(JSON.stringify(withModel), /gpt-5\.4/u);
+
+  const warned = await runCopilotHook(
+    "postToolUse",
+    { ...payload("postToolUse"), modelId: "gpt-5.4" },
+    { ...BASE_ENV, SILMARIL_MODE: "warn" },
+    dependencies([{ prediction: "MALICIOUS", mode: "warn" }]),
+  );
+  assert.deepEqual(warned, { additionalContext: SAFE_WARN_MESSAGE });
+
+  const failed = await runCopilotHook(
+    "preToolUse",
+    { ...payload("preToolUse"), selectedModel: "gpt-5.4" },
+    blockEnv,
+    dependencies([new Error("network failure")]),
+  );
+  assert.deepEqual(failed, {});
+});
+
 test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
