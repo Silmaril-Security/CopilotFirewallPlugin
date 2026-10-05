@@ -437,7 +437,7 @@ test("manifests are Copilot-native and version aligned", async () => {
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.6.2");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.7.1");
   assert.deepEqual(Object.keys(hooks.hooks), [
     "userPromptSubmitted",
     "preToolUse",

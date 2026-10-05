@@ -140,7 +140,9 @@ var init_hooks = __esm({
     };
     DEFAULT_HOOKS = /* @__PURE__ */ new Set([
       FirewallHook.LLM_START,
-      FirewallHook.CHAT_MODEL_START
+      FirewallHook.CHAT_MODEL_START,
+      FirewallHook.TOOL_START,
+      FirewallHook.TOOL_END
     ]);
     INPUT_HOOKS = /* @__PURE__ */ new Set([
       FirewallHook.LLM_START,
@@ -244,6 +246,7 @@ function findLastUserMessage2(messages) {
 async function createLangChainHandler(firewall, options = {}) {
   const { BaseCallbackHandler } = await import("@langchain/core/callbacks/base");
   const enabledHooks = resolveHooks(options.hooks);
+  const includeTool = options.includeTool ?? true;
   const failOpen = options.failOpen ?? true;
   const logger = options.logger ?? ((message, error) => {
     console.warn(`silmaril.firewall: ${message}`, error);
@@ -265,6 +268,10 @@ async function createLangChainHandler(firewall, options = {}) {
     try {
       result = await firewall.classify(text, {
         hook: hookLabel,
+        metadata: {
+          langgraph: { run_id: runId },
+          ...options.conversationId === void 0 ? {} : { conversationId: options.conversationId }
+        },
         ...requestedMode !== void 0 ? { mode: requestedMode } : {},
         ...toolName !== void 0 ? { toolName } : {}
       });
@@ -340,7 +347,7 @@ async function createLangChainHandler(firewall, options = {}) {
       await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_START], runId);
     }
     async handleToolStart(tool, inputStr, runId) {
-      if (!enabledHooks.has(FirewallHook.TOOL_START)) {
+      if (!includeTool || !enabledHooks.has(FirewallHook.TOOL_START)) {
         return;
       }
       const text = extractTextFromToolInput(inputStr);
@@ -371,7 +378,7 @@ async function createLangChainHandler(firewall, options = {}) {
       await classify(text, FIREWALL_HOOK_TO_LABEL[FirewallHook.LLM_END], runId);
     }
     async handleToolEnd(output, runId, _parentRunId, _tags, _kwargs) {
-      if (!enabledHooks.has(FirewallHook.TOOL_END)) {
+      if (!includeTool || !enabledHooks.has(FirewallHook.TOOL_END)) {
         return;
       }
       const text = String(output).trim();
@@ -740,11 +747,12 @@ function sanitizeText(text) {
   }
   return out;
 }
-var SDK_VERSION = "0.6.2";
+var SDK_VERSION = "0.7.1";
 var DEFAULT_TIMEOUT_MS = 1e4;
 var DEFAULT_MAX_RETRIES = 5;
 var MAX_BACKOFF_SECONDS = 30;
 var MAX_ERROR_BODY_BYTES = 1 << 16;
+var MAX_TIMEOUT_MS = 2147483647;
 function resolveMode(value, requestedMode) {
   let responseMode;
   if (value === "shadow" || value === "warn" || value === "block") {
@@ -883,6 +891,71 @@ async function readCappedErrorBody(response) {
   }
   return new TextDecoder().decode(body);
 }
+async function discardResponseBody(response) {
+  try {
+    if (response.body) {
+      if (!response.body.locked) {
+        await response.body.cancel();
+      }
+      return;
+    }
+    await response.text();
+  } catch {
+  }
+}
+function isAbortLikeError(error) {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const name = error.name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+async function readBodyUnderSignal(read, signal) {
+  try {
+    return await read();
+  } catch (error) {
+    if (signal.aborted && isAbortLikeError(error)) {
+      throw signal.reason;
+    }
+    throw error;
+  }
+}
+function createAttemptSignal(timeoutMs, callerSignal) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(
+      new DOMException("The operation was aborted due to timeout", "TimeoutError")
+    );
+  }, timeoutMs);
+  const onCallerAbort = () => {
+    controller.abort(callerSignal?.reason);
+  };
+  callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    }
+  };
+}
+function sleep(ms, signal) {
+  return new Promise((resolve2, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve2();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 var Firewall = class {
   apiKey;
   apiUrl;
@@ -902,6 +975,11 @@ var Firewall = class {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (typeof this.timeoutMs !== "number" || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 0) {
       throw new Error(`Firewall: timeoutMs must be a finite non-negative number, got ${this.timeoutMs}`);
+    }
+    if (this.timeoutMs > MAX_TIMEOUT_MS) {
+      throw new Error(
+        `Firewall: timeoutMs must be at most ${MAX_TIMEOUT_MS} ms, got ${this.timeoutMs}`
+      );
     }
     this.mode = options.mode ?? legacyMode(options.shadowMode);
     this.shadowMode = this.mode === "shadow";
@@ -959,7 +1037,15 @@ var Firewall = class {
         ...options.governance?.[index] === void 0 ? {} : { governance: options.governance[index] }
       })
     );
-    const data = await this.postWithRetry(payload);
+    const data = await this.postWithRetry(payload, options.signal);
+    if (!Array.isArray(data.predictions)) {
+      throw new Error("Firewall: response predictions must be an array");
+    }
+    if (data.predictions.length !== payload.texts.length) {
+      throw new Error(
+        `Firewall: response predictions length ${data.predictions.length} does not match submitted texts length ${payload.texts.length}`
+      );
+    }
     return data.predictions.map((p) => blockResultFromResponse(p, requestedMode));
   }
   asLangChainHandler(options = {}) {
@@ -970,28 +1056,40 @@ var Firewall = class {
   asMiddleware(options = {}) {
     return createMiddleware(this, options);
   }
-  async postWithRetry(payload, maxRetries = DEFAULT_MAX_RETRIES) {
+  async postWithRetry(payload, callerSignal, maxRetries = DEFAULT_MAX_RETRIES) {
+    callerSignal?.throwIfAborted();
+    const body = JSON.stringify(payload);
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const response = await fetch(this.apiUrl, {
-        method: "POST",
-        headers: this.headers,
-        body: JSON.stringify(payload),
-        redirect: "error",
-        signal: AbortSignal.timeout(this.timeoutMs)
-      });
-      if (response.status !== 429 || attempt === maxRetries) {
-        if (!response.ok) {
-          const body = await readCappedErrorBody(response);
-          throw new SilmarilApiError({
-            status: response.status,
-            statusText: response.statusText,
-            body
-          });
+      callerSignal?.throwIfAborted();
+      const attemptSignal = createAttemptSignal(this.timeoutMs, callerSignal);
+      try {
+        const response = await fetch(this.apiUrl, {
+          method: "POST",
+          headers: this.headers,
+          body,
+          redirect: "error",
+          signal: attemptSignal.signal
+        });
+        if (response.status !== 429 || attempt === maxRetries) {
+          if (!response.ok) {
+            const errorBody = await readCappedErrorBody(response);
+            attemptSignal.signal.throwIfAborted();
+            throw new SilmarilApiError({
+              status: response.status,
+              statusText: response.statusText,
+              body: errorBody
+            });
+          }
+          return await readBodyUnderSignal(
+            () => response.json(),
+            attemptSignal.signal
+          );
         }
-        return await response.json();
+        await discardResponseBody(response);
+      } finally {
+        attemptSignal.dispose();
       }
-      const waitSeconds = Math.min(2 ** attempt, MAX_BACKOFF_SECONDS);
-      await new Promise((resolve2) => setTimeout(resolve2, waitSeconds * 1e3));
+      await sleep(Math.min(2 ** attempt, MAX_BACKOFF_SECONDS) * 1e3, callerSignal);
     }
     throw new Error("Firewall: exhausted retries (unreachable)");
   }
@@ -1011,7 +1109,7 @@ var Firewall = class {
       ...metadataInfo,
       ...options.governance === void 0 ? {} : { governance: options.governance }
     });
-    const data = await this.postWithRetry(payload);
+    const data = await this.postWithRetry(payload, options.signal);
     return blockResultFromResponse(data, requestedMode);
   }
 };
@@ -1187,7 +1285,7 @@ import { homedir as homedir2 } from "node:os";
 import path2 from "node:path";
 var DEFAULT_TIMEOUT_MS2 = 2500;
 var MIN_TIMEOUT_MS = 250;
-var MAX_TIMEOUT_MS = 1e4;
+var MAX_TIMEOUT_MS2 = 1e4;
 var MAX_CONFIG_BYTES = 64 * 1024;
 function resolveRuntimeConfig(env = process.env) {
   const fileResult = readFileConfig(configurationPath(env));
@@ -1279,7 +1377,7 @@ function isMissingFileError(error) {
 }
 function integerInRange(value) {
   const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
-  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= MIN_TIMEOUT_MS && parsed <= MAX_TIMEOUT_MS ? parsed : void 0;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= MIN_TIMEOUT_MS && parsed <= MAX_TIMEOUT_MS2 ? parsed : void 0;
 }
 function parseBoolean(value) {
   if (typeof value !== "string") return void 0;
@@ -1545,13 +1643,15 @@ async function runCopilotHook(eventName, input, env = process.env, dependencies 
     const client = new dependencies.firewallConstructor({
       apiKey: config.apiKey,
       apiUrl: config.apiUrl,
-      timeoutMs: config.timeoutMs,
+      // Leave time for native hook output within the host deadline.
+      timeoutMs: Math.min(config.timeoutMs, 8e3),
       ...config.mode ? { mode: config.mode } : {}
     });
     result = await client.classify(target.text, {
       hook: target.firewallHook,
       ...target.toolName ? { toolName: target.toolName } : {},
       requestId: target.requestId,
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8e3)),
       metadata: withProvenance(
         target.metadata,
         config.endpointId,

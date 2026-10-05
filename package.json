@@ -20,11 +20,12 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "npm run typecheck",
-    "test": "npm run build && node --import tsx --test test/*.test.ts",
-    "pack:dry": "npm pack --dry-run"
+    "test": "npm run build && node --import tsx --test test/*.test.ts && node scripts/test-classification-deadline.mjs",
+    "pack:dry": "npm pack --dry-run",
+    "test:deadline": "npm run build && node scripts/test-classification-deadline.mjs"
   },
   "dependencies": {
-    "@silmaril-security/sdk": "0.6.2"
+    "@silmaril-security/sdk": "0.7.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

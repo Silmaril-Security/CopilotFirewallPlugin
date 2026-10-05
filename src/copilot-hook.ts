@@ -47,6 +47,7 @@ type FirewallClient = {
     toolName?: string;
     metadata?: Record<string, unknown>;
     requestId?: string;
+    signal?: AbortSignal;
     mode?: FirewallMode;
   }): Promise<ClassificationResult>;
 };
@@ -92,13 +93,15 @@ export async function runCopilotHook(
     const client = new dependencies.firewallConstructor({
       apiKey: config.apiKey,
       apiUrl: config.apiUrl,
-      timeoutMs: config.timeoutMs,
+      // Leave time for native hook output within the host deadline.
+      timeoutMs: Math.min(config.timeoutMs, 8000),
       ...(config.mode ? { mode: config.mode } : {}),
     });
     result = await client.classify(target.text, {
       hook: target.firewallHook,
       ...(target.toolName ? { toolName: target.toolName } : {}),
       requestId: target.requestId,
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8000)),
       metadata: withProvenance(
         target.metadata,
         config.endpointId,
