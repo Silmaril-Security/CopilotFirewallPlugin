@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import * as hook from "../dist/copilot-hook.js";
 
 // Exercise the shipped bundle and its actual SDK, without network or a native host.
@@ -72,3 +74,26 @@ try {
   globalThis.fetch = originalFetch;
   AbortSignal.timeout = originalTimeout;
 }
+
+// Verify actual process exit after retry cleanup stalls, using real deadline timers.
+const child = spawnSync(process.execPath, [fileURLToPath(new URL("stalled-retry-process.mjs", import.meta.url))], {
+  timeout: 30000,
+  encoding: "utf8",
+  env: {
+    PATH: process.env.PATH,
+    HOME: "/nonexistent/silmaril-deadline-home",
+    CODEX_HOME: "/nonexistent/silmaril-deadline-home/.codex",
+    SILMARIL_API_KEY: "synthetic-test-key",
+    SILMARIL_API_URL: "https://firewall.invalid/classify",
+    SILMARIL_CONFIG_PATH: "/nonexistent/silmaril-deadline-test.json",
+    SILMARIL_TIMEOUT_MS: "10000",
+    SILMARIL_LOCAL_EVENT_DIR: "/dev/null/silmaril-deadline-test",
+  },
+});
+assert.equal(child.status, 0, child.stderr || String(child.error));
+const timing = JSON.parse(child.stdout);
+assert.equal(timing.attempts, 3, "reached cleanup after two retry waits");
+assert.ok(timing.hookMS < 10000, "hook obeys its capped classification budget");
+assert.ok(timing.processMS < 10000, "classification and remaining timers finish within the host budget");
+assert.ok(timing.processMS - timing.hookMS < 1000, "SDK timers do not retain the process after the hook finishes");
+console.log("shipped-bundle process exits within the host budget after stalled retry cleanup");
