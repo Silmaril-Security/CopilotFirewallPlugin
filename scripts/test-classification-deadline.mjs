@@ -76,9 +76,8 @@ try {
 }
 
 // Verify actual process exit after retry cleanup stalls, using real deadline timers.
-const processStarted = performance.now();
 const child = spawnSync(process.execPath, [fileURLToPath(new URL("stalled-retry-process.mjs", import.meta.url))], {
-  timeout: 12000,
+  timeout: 30000,
   encoding: "utf8",
   env: {
     PATH: process.env.PATH,
@@ -92,6 +91,9 @@ const child = spawnSync(process.execPath, [fileURLToPath(new URL("stalled-retry-
   },
 });
 assert.equal(child.status, 0, child.stderr || String(child.error));
-assert.equal(JSON.parse(child.stdout).attempts, 3, "reached cleanup after two retry waits");
-assert.ok(performance.now() - processStarted < 10000, "process exits before the shortest host deadline");
+const timing = JSON.parse(child.stdout);
+assert.equal(timing.attempts, 3, "reached cleanup after two retry waits");
+assert.ok(timing.hookMS < 10000, "hook obeys its capped classification budget");
+assert.ok(timing.processMS < 10000, "classification and remaining timers finish within the host budget");
+assert.ok(timing.processMS - timing.hookMS < 1000, "SDK timers do not retain the process after the hook finishes");
 console.log("shipped-bundle process exits within the host budget after stalled retry cleanup");

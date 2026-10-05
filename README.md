@@ -33,7 +33,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` rebuilds `dist/copilot-hook.js` through `scripts/build.mjs`. That file stays committed because `hooks/hooks.json` executes it directly. The bundle includes `@silmaril-security/sdk` 0.7.1.
+`npm test` rebuilds `dist/copilot-hook.js` through `scripts/build.mjs`. That file stays committed because `hooks/hooks.json` executes it directly. The bundle includes `@silmaril-security/sdk` 0.7.2.
 
 ## Protection boundaries
 
@@ -52,6 +52,6 @@ For a block candidate, the current event behaves as follows:
 
 `agentStop` stays registered, and the handler ignores its payload, including `transcriptPath`. `subagentStop` classifies the current `response`. When `stopHookActive` is true, block mode leaves that response unchanged and sets `blockUnavailable`. Tool events identify a tool, or an MCP tool when the name is `mcp__<server>__<tool>`. Prompt and subagent events identify an agent.
 
-Local evidence contains fingerprints, decisions, bounded risk metadata, and provenance for producer `CopilotFirewallPlugin` at the plugin version. `policyVersion` and `modelVersion` are copied only from `policy_version` and `model_id` on the classification object. The shipped SDK 0.7.1 result does not include those keys, and it does not copy governance `policyVersion` into local evidence. Local evidence never stores raw prompts, tool arguments, results, responses, or the Mac computer name. The default directory is `$HOME/Library/Application Support/Silmaril/Evidence/incoming`. `SILMARIL_LOCAL_EVENT_DIR`, or `SILMARIL_EVIDENCE_ROOT/incoming`, overrides it.
+Local evidence contains fingerprints, decisions, bounded risk metadata, and provenance for producer `CopilotFirewallPlugin` at the plugin version. `policyVersion` and `modelVersion` are copied only from `policy_version` and `model_id` on the classification object. The shipped SDK 0.7.2 result does not include those keys, and it does not copy governance `policyVersion` into local evidence. Local evidence never stores raw prompts, tool arguments, results, responses, or the Mac computer name. The default directory is `$HOME/Library/Application Support/Silmaril/Evidence/incoming`. `SILMARIL_LOCAL_EVENT_DIR`, or `SILMARIL_EVIDENCE_ROOT/incoming`, overrides it.
 
 Classify metadata provenance is plugin-owned: `schema_version` 1, `harness` `copilot`, an optional v4 endpoint id, and on macOS a sanitized ComputerName in `device_name`. Spoofed provenance is replaced. A failed or non-macOS lookup omits `device_name`, and classification still runs.
