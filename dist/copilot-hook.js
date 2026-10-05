@@ -1,3 +1,22 @@
+// src/classification-deadline.ts
+function withClassificationDeadline(timeoutMs, classify) {
+  const signal = AbortSignal.timeout(Math.min(timeoutMs, 8e3));
+  return new Promise((resolve2, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve().then(() => classify(signal)).then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve2(result);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
 // src/copilot-hook.ts
 import { createHash as createHash2 } from "node:crypto";
 import { resolve } from "node:path";
@@ -1647,18 +1666,18 @@ async function runCopilotHook(eventName, input, env = process.env, dependencies 
       timeoutMs: Math.min(config.timeoutMs, 8e3),
       ...config.mode ? { mode: config.mode } : {}
     });
-    result = await client.classify(target.text, {
+    result = await withClassificationDeadline(config.timeoutMs, (signal) => client.classify(target.text, {
       hook: target.firewallHook,
       ...target.toolName ? { toolName: target.toolName } : {},
       requestId: target.requestId,
-      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8e3)),
+      signal,
       metadata: withProvenance(
         target.metadata,
         config.endpointId,
         governanceContext(target),
         deviceName
       )
-    });
+    }));
   } catch (error) {
     debugLog(config, "classification_error", target.eventName, error);
     return {};

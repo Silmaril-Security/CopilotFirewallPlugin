@@ -1,3 +1,4 @@
+import { withClassificationDeadline } from "./classification-deadline.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,18 +98,18 @@ export async function runCopilotHook(
       timeoutMs: Math.min(config.timeoutMs, 8000),
       ...(config.mode ? { mode: config.mode } : {}),
     });
-    result = await client.classify(target.text, {
+    result = await withClassificationDeadline(config.timeoutMs, (signal) => client.classify(target.text, {
       hook: target.firewallHook,
       ...(target.toolName ? { toolName: target.toolName } : {}),
       requestId: target.requestId,
-      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8000)),
+      signal,
       metadata: withProvenance(
         target.metadata,
         config.endpointId,
         governanceContext(target),
         deviceName,
       ),
-    });
+    }));
   } catch (error) {
     debugLog(config, "classification_error", target.eventName, error);
     return {};
