@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import * as hook from "../dist/copilot-hook.js";
 
 // Exercise the shipped bundle and its actual SDK, without network or a native host.
@@ -72,3 +74,24 @@ try {
   globalThis.fetch = originalFetch;
   AbortSignal.timeout = originalTimeout;
 }
+
+// Verify actual process exit after retry cleanup stalls, using real deadline timers.
+const processStarted = performance.now();
+const child = spawnSync(process.execPath, [fileURLToPath(new URL("stalled-retry-process.mjs", import.meta.url))], {
+  timeout: 12000,
+  encoding: "utf8",
+  env: {
+    PATH: process.env.PATH,
+    HOME: "/nonexistent/silmaril-deadline-home",
+    CODEX_HOME: "/nonexistent/silmaril-deadline-home/.codex",
+    SILMARIL_API_KEY: "synthetic-test-key",
+    SILMARIL_API_URL: "https://firewall.invalid/classify",
+    SILMARIL_CONFIG_PATH: "/nonexistent/silmaril-deadline-test.json",
+    SILMARIL_TIMEOUT_MS: "10000",
+    SILMARIL_LOCAL_EVENT_DIR: "/dev/null/silmaril-deadline-test",
+  },
+});
+assert.equal(child.status, 0, child.stderr || String(child.error));
+assert.equal(JSON.parse(child.stdout).attempts, 3, "reached cleanup after two retry waits");
+assert.ok(performance.now() - processStarted < 10000, "process exits before the shortest host deadline");
+console.log("shipped-bundle process exits within the host budget after stalled retry cleanup");
