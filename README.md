@@ -37,7 +37,7 @@ npm test
 
 ## Protection boundaries
 
-Omit `mode` and the legacy `blockMalicious` flag to use the backend mode. If that response has no mode, the plugin uses shadow. An explicit `shadow`, `warn`, or `block` overrides the legacy flag and the response mode. Without an explicit mode, `blockMalicious: true` selects block and `false` selects shadow.
+Current classify responses omit mode. With no `mode` or legacy `blockMalicious` flag, the plugin falls back to shadow; set warn or block explicitly when intended. A valid mode from a legacy response remains a compatibility fallback. An explicit `shadow`, `warn`, or `block` overrides the legacy flag and the response mode. Without an explicit mode, `blockMalicious: true` selects block and `false` selects shadow.
 
 For a block candidate, the current event behaves as follows:
 
