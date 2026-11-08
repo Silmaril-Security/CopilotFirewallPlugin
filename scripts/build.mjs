@@ -9,7 +9,7 @@ await build({
   platform: "node",
   format: "esm",
   target: "node22",
-  external: ["@langchain/core/callbacks/base"],
+  external: ["@langchain/core/*"],
   legalComments: "none",
   sourcemap: false,
 });
