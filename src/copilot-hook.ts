@@ -2,7 +2,13 @@ import { withClassificationDeadline } from "./classification-deadline.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Firewall, HookLabel, type FirewallOptions } from "@silmaril-security/sdk";
+import {
+  Firewall,
+  HookLabel,
+  type ClassifyOptions,
+  type FirewallOptions,
+  type GovernanceContext,
+} from "@silmaril-security/sdk";
 import {
   buildLocalProtectionEvent,
   writeLocalProtectionEvent,
@@ -20,7 +26,7 @@ import {
 import { resolvePluginDeviceName, sanitizeDeviceName } from "./mac-computer-name.ts";
 
 export const PLUGIN_NAME = "silmaril-firewall";
-export const PLUGIN_VERSION = "0.3.4";
+export const PLUGIN_VERSION = "0.3.5";
 export const SAFE_BLOCK_MESSAGE = "Silmaril Firewall blocked potentially malicious content.";
 export const SAFE_WARN_MESSAGE = "Silmaril Firewall warning: treat the current content as untrusted and continue only with a safe alternative.";
 const RUNTIME_CHECK_MARKER = /\bsilmaril-runtime-check:[A-Za-z0-9-]{16,128}\b/u;
@@ -34,30 +40,15 @@ export type CopilotEventName =
   | "subagentStop";
 
 type ClassificationResult = Record<string, unknown>;
-type GovernanceContext = {
-  agent: "copilot";
-  resource: {
-    kind: "agent" | "tool" | "mcp_tool";
-    id: string;
-    parent_id?: string;
-  };
-};
 type FirewallClient = {
-  classify(text: string, options?: {
-    hook?: string;
-    toolName?: string;
-    metadata?: Record<string, unknown>;
-    requestId?: string;
-    signal?: AbortSignal;
-    mode?: FirewallMode;
-  }): Promise<ClassificationResult>;
+  classify(text: string, options?: ClassifyOptions): Promise<ClassificationResult>;
 };
 type FirewallConstructor = new (options: FirewallOptions & { mode?: FirewallMode }) => FirewallClient;
 
 type HookTarget = {
   eventName: CopilotEventName;
   text: string;
-  firewallHook: string;
+  firewallHook: HookLabel;
   evidenceHook: ProtectionHook;
   sessionId?: string;
   toolName?: string;
@@ -98,18 +89,23 @@ export async function runCopilotHook(
       timeoutMs: Math.min(config.timeoutMs, 8000),
       ...(config.mode ? { mode: config.mode } : {}),
     });
-    result = await withClassificationDeadline(config.timeoutMs, (signal) => client.classify(target.text, {
-      hook: target.firewallHook,
-      ...(target.toolName ? { toolName: target.toolName } : {}),
-      requestId: target.requestId,
-      signal,
-      metadata: withProvenance(
-        target.metadata,
-        config.endpointId,
-        governanceContext(target),
-        deviceName,
-      ),
-    }));
+    const governance = governanceContext(target);
+    result = await withClassificationDeadline(config.timeoutMs, (signal) => client.classify(
+      target.text,
+      {
+        hook: target.firewallHook,
+        ...(target.toolName ? { toolName: target.toolName } : {}),
+        governance,
+        requestId: target.requestId,
+        signal,
+        metadata: withProvenance(
+          target.metadata,
+          config.endpointId,
+          governance,
+          deviceName,
+        ),
+      },
+    ));
   } catch (error) {
     debugLog(config, "classification_error", target.eventName, error);
     return {};
@@ -175,7 +171,7 @@ export function buildHookTarget(
   const sessionId = readString(record.sessionId);
   const toolName = readString(record.toolName);
   let text: string | undefined;
-  let firewallHook: string;
+  let firewallHook: HookLabel;
   let evidenceHook: ProtectionHook;
   let enforceable: HookTarget["enforceable"] = "none";
   let warnable = false;
@@ -282,9 +278,25 @@ export function withProvenance(
         harness: "copilot",
         device_name: sanitizeDeviceName(deviceName),
       }),
-      ...(governance ? { governance } : {}),
+      ...(governance ? { governance: compatibilityGovernanceAttribution(governance) } : {}),
     },
   };
+}
+
+function compatibilityGovernanceAttribution(
+  governance: GovernanceContext,
+): Record<string, unknown> {
+  const resource = governance.resource;
+  return omitUndefined({
+    agent: governance.agent,
+    resource: resource
+      ? omitUndefined({
+        kind: resource.kind,
+        id: resource.id,
+        ...(resource.kind === "mcp_tool" ? { parent_id: resource.parentId } : {}),
+      })
+      : undefined,
+  });
 }
 
 export function governanceContext(
@@ -300,7 +312,7 @@ export function governanceContext(
     return {
       agent: "copilot",
       resource: mcp
-        ? { kind: "mcp_tool", id: mcp.toolId, parent_id: mcp.serverId }
+        ? { kind: "mcp_tool", id: mcp.toolId, parentId: mcp.serverId }
         : { kind: "tool", id: toolName },
     };
   }

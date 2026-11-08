@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import test from "node:test";
+import { Firewall, type ClassifyOptions } from "@silmaril-security/sdk";
 import {
   PLUGIN_VERSION,
   SAFE_BLOCK_MESSAGE,
@@ -16,6 +18,7 @@ import {
   runCopilotHook,
   withProvenance,
   type CopilotEventName,
+  type RuntimeDependencies,
 } from "../src/copilot-hook.ts";
 import {
   buildLocalProtectionEvent,
@@ -54,7 +57,7 @@ test("governance context normalizes tool, MCP, and subagent identities", () => {
     metadata: {},
   }), {
     agent: "copilot",
-    resource: { kind: "mcp_tool", id: "create_issue", parent_id: "github" },
+    resource: { kind: "mcp_tool", id: "create_issue", parentId: "github" },
   });
   assert.deepEqual(governanceContext({
     eventName: "subagentStop",
@@ -77,7 +80,7 @@ function dependencies(
       calls.push({ constructor: options });
     }
 
-    async classify(text: string, options: unknown) {
+    async classify(text: string, options: ClassifyOptions) {
       calls.push({ text, options });
       const result = results.shift();
       if (result instanceof Error) throw result;
@@ -196,6 +199,66 @@ test("shadow mode classifies only events with current native content", async () 
     JSON.stringify(events),
     /user prompt|tool result|tool failed|subagent output/u,
   );
+});
+
+test("SDK serializes native agent, tool, and MCP governance resources on the wire", async () => {
+  const cases = [
+    {
+      eventName: "userPromptSubmitted" as const,
+      input: payload("userPromptSubmitted"),
+      resource: { kind: "agent", id: "copilot" },
+    },
+    {
+      eventName: "preToolUse" as const,
+      input: payload("preToolUse"),
+      resource: { kind: "tool", id: "bash" },
+    },
+    {
+      eventName: "preToolUse" as const,
+      input: {
+        ...payload("preToolUse"),
+        toolName: "mcp__github__create_issue",
+      },
+      resource: { kind: "mcp_tool", id: "create_issue", parent_id: "github" },
+    },
+  ];
+
+  const requests = await captureSdkRequests(async (apiUrl) => {
+    for (const item of cases) {
+      assert.deepEqual(
+        await runCopilotHook(
+          item.eventName,
+          item.input,
+          { ...BASE_ENV, SILMARIL_API_URL: apiUrl },
+          {
+            firewallConstructor: Firewall as unknown as RuntimeDependencies["firewallConstructor"],
+            evidenceEmitter: async () => undefined,
+            deviceName: () => undefined,
+          },
+        ),
+        {},
+      );
+    }
+  });
+
+  assert.equal(requests.length, cases.length);
+  for (const [index, request] of requests.entries()) {
+    const expected = cases[index]!;
+    assert.deepEqual(request.resource, expected.resource);
+    assert.deepEqual(request.metadata.silmaril.governance, {
+      agent: "copilot",
+      resource: expected.resource,
+    });
+    assert.equal(
+      Object.hasOwn(request.metadata.silmaril.governance.resource, "parentId"),
+      false,
+    );
+    assert.equal(request.metadata.silmaril.sdk_version, "0.8.2");
+    assert.equal(
+      request.metadata.silmaril.request_id,
+      buildHookTarget(expected.eventName, expected.input)?.requestId,
+    );
+  }
 });
 
 test("block mode uses native deny, replacement, and stop decisions", async () => {
@@ -405,6 +468,30 @@ test("provenance is plugin-owned and local evidence is private and raw-content f
       },
     },
   });
+  assert.deepEqual(withProvenance(
+    {},
+    undefined,
+    governanceContext({
+      eventName: "preToolUse",
+      toolName: "mcp__github__create_issue",
+      metadata: {},
+    }),
+  ), {
+    silmaril: {
+      provenance: {
+        schema_version: 1,
+        harness: "copilot",
+      },
+      governance: {
+        agent: "copilot",
+        resource: {
+          kind: "mcp_tool",
+          id: "create_issue",
+          parent_id: "github",
+        },
+      },
+    },
+  });
   const root = await mkdtemp(path.join(os.tmpdir(), "silmaril-copilot-evidence-"));
   const event = buildLocalProtectionEvent({
     pluginVersion: PLUGIN_VERSION,
@@ -433,11 +520,11 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.3.4");
+  assert.equal(packageJson.version, "0.3.5");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.7.2");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.deepEqual(Object.keys(hooks.hooks), [
     "userPromptSubmitted",
     "preToolUse",
@@ -524,4 +611,40 @@ async function captureStderr(run: () => Promise<void>): Promise<string> {
     process.stderr.write = original;
   }
   return chunks.join("");
+}
+
+async function captureSdkRequests(
+  run: (apiUrl: string) => Promise<void>,
+): Promise<any[]> {
+  const requests: any[] = [];
+  const server = createServer(async (request, response) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        prediction: "BENIGN",
+        score: 0.01,
+        threshold: 0.5,
+      }));
+    } catch {
+      response.writeHead(500);
+      response.end();
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    await run(`http://127.0.0.1:${address.port}/classify`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+  return requests;
 }
