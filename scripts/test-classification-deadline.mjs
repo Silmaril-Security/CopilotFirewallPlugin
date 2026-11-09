@@ -57,7 +57,13 @@ try {
         SILMARIL_LOCAL_EVENT_DIR: "/dev/null/silmaril-deadline-test",
       };
       const started = performance.now();
-      await hook.runCopilotHook("userPromptSubmitted", { prompt: "synthetic test" }, env);
+      await hook.runCopilotHook("userPromptTransformed", {
+        sessionId: "synthetic-session",
+        timestamp: 1,
+        cwd: "/tmp",
+        prompt: "synthetic test",
+        transformedPrompt: "synthetic transformed test",
+      }, env);
       assert.deepEqual(deadlines, [expected], "one deadline spans the complete classification");
       assert.equal(attempts, 1, "deadline stops classification before another request");
       if (status === "stalled-disposal") {

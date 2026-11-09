@@ -8,6 +8,8 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { Firewall, type ClassifyOptions } from "@silmaril-security/sdk";
 import {
+  MAX_SAFE_REPLACEMENT_BYTES,
+  PLUGIN_NAME,
   PLUGIN_VERSION,
   SAFE_BLOCK_MESSAGE,
   SAFE_WARN_MESSAGE,
@@ -102,6 +104,12 @@ function payload(event: CopilotEventName, transcriptPath?: string): Record<strin
   switch (event) {
     case "userPromptSubmitted":
       return { ...base, prompt: "user prompt" };
+    case "userPromptTransformed":
+      return {
+        ...base,
+        prompt: "user prompt",
+        transformedPrompt: "runtime-transformed user prompt",
+      };
     case "preToolUse":
       return { ...base, toolName: "bash", toolArgs: { command: "pwd" } };
     case "postToolUse":
@@ -165,6 +173,7 @@ test("shadow mode classifies only events with current native content", async () 
   const calls: any[] = [];
   const eventNames: CopilotEventName[] = [
     "userPromptSubmitted",
+    "userPromptTransformed",
     "preToolUse",
     "postToolUse",
     "postToolUseFailure",
@@ -201,11 +210,147 @@ test("shadow mode classifies only events with current native content", async () 
   );
 });
 
+test("transformed prompts preserve bytes and use only bounded model-facing replacement", async () => {
+  const exact = " \tprimary\r\npreceding\u0000unicode \u03b2 \n";
+  const input = {
+    sessionId: " session-1 ",
+    timestamp: 1_787_156_024_056,
+    cwd: "/tmp/project",
+    prompt: "visible prompt",
+    transformedPrompt: exact,
+  };
+  const calls: any[] = [];
+  const benign = await runCopilotHook(
+    "userPromptTransformed",
+    input,
+    BASE_ENV,
+    dependencies([{ prediction: "BENIGN" }], [], calls),
+  );
+  assert.deepEqual(benign, {});
+  assert.equal(calls.find((call) => call.text)?.text, exact);
+  assert.equal(buildHookTarget("userPromptTransformed", input)?.text, exact);
+
+  const events: any[] = [];
+  const blocked = await runCopilotHook(
+    "userPromptTransformed",
+    input,
+    { ...BASE_ENV, SILMARIL_MODE: "block" },
+    dependencies([{ prediction: "MALICIOUS" }], events),
+  );
+  assert.deepEqual(blocked, { modifiedTransformedPrompt: SAFE_BLOCK_MESSAGE });
+  assert.deepEqual(Object.keys(blocked), ["modifiedTransformedPrompt"]);
+  assert.ok(Buffer.byteLength(SAFE_BLOCK_MESSAGE, "utf8") <= MAX_SAFE_REPLACEMENT_BYTES);
+  assert.doesNotMatch(JSON.stringify(blocked), /primary|preceding|unicode/u);
+  assert.equal(events[0].nativeAction, "content_replaced");
+  assert.equal(events[0].policyDecision, "block");
+  assert.equal(events[0].evidenceTruth, "native_response_returned");
+});
+
+test("transformed prompt identity is deterministic for primary, batch, retry, and resume fixtures", async () => {
+  const primary = payload("userPromptTransformed");
+  const preceding = {
+    ...payload("userPromptTransformed"),
+    prompt: "preceding prompt",
+    transformedPrompt: "preceding model-facing bytes",
+  };
+  const resumed = { ...primary };
+  const differentSession = { ...primary, sessionId: "session-2" };
+
+  const primaryTarget = buildHookTarget("userPromptTransformed", primary);
+  const retryTarget = buildHookTarget("userPromptTransformed", { ...primary });
+  const resumedTarget = buildHookTarget("userPromptTransformed", resumed);
+  const precedingTarget = buildHookTarget("userPromptTransformed", preceding);
+  const isolatedTarget = buildHookTarget("userPromptTransformed", differentSession);
+  assert.ok(primaryTarget);
+  assert.equal(retryTarget?.requestId, primaryTarget.requestId);
+  assert.equal(resumedTarget?.requestId, primaryTarget.requestId);
+  assert.notEqual(precedingTarget?.requestId, primaryTarget.requestId);
+  assert.notEqual(isolatedTarget?.requestId, primaryTarget.requestId);
+
+  const expected = `${PLUGIN_NAME}-${createHash("sha256").update([
+    "session-1",
+    "userPromptTransformed",
+    "1787156024056",
+    createHash("sha256").update("user prompt").digest("hex"),
+    createHash("sha256").update("runtime-transformed user prompt").digest("hex"),
+  ].join("\u0000")).digest("hex")}`;
+  assert.equal(primaryTarget.requestId, expected);
+
+  const calls: any[] = [];
+  const batchDependencies = dependencies(
+    [{ prediction: "BENIGN" }, { prediction: "BENIGN" }],
+    [],
+    calls,
+  );
+  assert.deepEqual(await runCopilotHook("userPromptTransformed", preceding, BASE_ENV, batchDependencies), {});
+  assert.deepEqual(await runCopilotHook("userPromptTransformed", primary, BASE_ENV, batchDependencies), {});
+  assert.deepEqual(
+    calls.filter((call) => call.text).map((call) => call.text),
+    ["preceding model-facing bytes", "runtime-transformed user prompt"],
+  );
+
+  const malicious = { prediction: "MALICIOUS" };
+  const blockEnv = { ...BASE_ENV, SILMARIL_MODE: "block" };
+  const originalOutput = await runCopilotHook(
+    "userPromptTransformed",
+    primary,
+    blockEnv,
+    dependencies([malicious]),
+  );
+  const replayOutput = await runCopilotHook(
+    "userPromptTransformed",
+    resumed,
+    blockEnv,
+    dependencies([malicious]),
+  );
+  assert.deepEqual(originalOutput, { modifiedTransformedPrompt: SAFE_BLOCK_MESSAGE });
+  assert.deepEqual(replayOutput, originalOutput);
+
+  const legacyCalls: any[] = [];
+  assert.deepEqual(
+    await runCopilotHook(
+      "userPromptSubmitted",
+      payload("userPromptSubmitted"),
+      BASE_ENV,
+      dependencies([{ prediction: "MALICIOUS" }], [], legacyCalls),
+    ),
+    {},
+  );
+  assert.equal(legacyCalls.filter((call) => call.text).length, 0);
+});
+
+test("transformed prompt parser requires only the official required schema", () => {
+  const valid = payload("userPromptTransformed");
+  assert.ok(buildHookTarget("userPromptTransformed", valid));
+  for (const field of ["sessionId", "timestamp", "cwd", "prompt", "transformedPrompt"]) {
+    const invalid = { ...valid };
+    delete invalid[field];
+    assert.equal(buildHookTarget("userPromptTransformed", invalid), undefined);
+  }
+  assert.equal(buildHookTarget("userPromptTransformed", { ...valid, timestamp: 1.5 }), undefined);
+  assert.equal(buildHookTarget("userPromptTransformed", { ...valid, sessionId: " \t" }), undefined);
+});
+
+test("conversation metadata does not change existing non-transformed request identities", () => {
+  const input = payload("preToolUse");
+  const target = buildHookTarget("preToolUse", input);
+  const text = JSON.stringify({ command: "pwd" });
+  const expected = `${PLUGIN_NAME}-${createHash("sha256").update([
+    "session-1",
+    "preToolUse",
+    "1787156024056",
+    createHash("sha256").update(text).digest("hex"),
+  ].join("\u0000")).digest("hex")}`;
+  assert.equal(target?.requestId, expected);
+  assert.equal(target?.metadata.sessionId, "session-1");
+  assert.equal(target?.metadata.conversationId, "session-1");
+});
+
 test("SDK serializes native agent, tool, and MCP governance resources on the wire", async () => {
   const cases = [
     {
-      eventName: "userPromptSubmitted" as const,
-      input: payload("userPromptSubmitted"),
+      eventName: "userPromptTransformed" as const,
+      input: payload("userPromptTransformed"),
       resource: { kind: "agent", id: "copilot" },
     },
     {
@@ -254,11 +399,41 @@ test("SDK serializes native agent, tool, and MCP governance resources on the wir
       false,
     );
     assert.equal(request.metadata.silmaril.sdk_version, "0.8.2");
+    assert.equal(request.metadata.sessionId, "session-1");
+    assert.equal(request.metadata.conversationId, "session-1");
     assert.equal(
       request.metadata.silmaril.request_id,
       buildHookTarget(expected.eventName, expected.input)?.requestId,
     );
   }
+});
+
+test("SDK wire metadata preserves session correlation and retry request identity", async () => {
+  const input = payload("userPromptTransformed");
+  const requests = await captureSdkRequests(async (apiUrl) => {
+    for (const current of [input, { ...input }, { ...input, sessionId: "session-2" }]) {
+      assert.deepEqual(
+        await runCopilotHook(
+          "userPromptTransformed",
+          current,
+          { ...BASE_ENV, SILMARIL_API_URL: apiUrl },
+          {
+            firewallConstructor: Firewall as unknown as RuntimeDependencies["firewallConstructor"],
+            evidenceEmitter: async () => undefined,
+            deviceName: () => undefined,
+          },
+        ),
+        {},
+      );
+    }
+  });
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].metadata.silmaril.request_id, requests[1].metadata.silmaril.request_id);
+  assert.notEqual(requests[0].metadata.silmaril.request_id, requests[2].metadata.silmaril.request_id);
+  assert.deepEqual(
+    requests.map((request) => [request.metadata.sessionId, request.metadata.conversationId]),
+    [["session-1", "session-1"], ["session-1", "session-1"], ["session-2", "session-2"]],
+  );
 });
 
 test("block mode uses native deny, replacement, and stop decisions", async () => {
@@ -289,6 +464,15 @@ test("block mode uses native deny, replacement, and stop decisions", async () =>
     additionalContext: SAFE_BLOCK_MESSAGE,
   });
   assert.doesNotMatch(JSON.stringify(postTool), /tool result/u);
+  assert.deepEqual(
+    await runCopilotHook(
+      "userPromptTransformed",
+      payload("userPromptTransformed"),
+      env,
+      dependencies([malicious], events),
+    ),
+    { modifiedTransformedPrompt: SAFE_BLOCK_MESSAGE },
+  );
   for (const eventName of ["userPromptSubmitted", "postToolUseFailure"] as const) {
     assert.deepEqual(
       await runCopilotHook(eventName, payload(eventName), env, dependencies([malicious], events)),
@@ -300,10 +484,10 @@ test("block mode uses native deny, replacement, and stop decisions", async () =>
     { decision: "block", reason: SAFE_BLOCK_MESSAGE },
   );
   assert.deepEqual(events.map((event) => event.policyDecision), [
-    "block", "block", "monitor", "monitor", "block",
+    "block", "block", "block", "monitor", "block",
   ]);
   assert.deepEqual(events.map((event) => event.nativeAction), [
-    "block_returned", "content_replaced", "allowed", "allowed", "block_returned",
+    "block_returned", "content_replaced", "content_replaced", "allowed", "block_returned",
   ]);
   assert.equal(events[1].blockUnavailable, undefined);
   assert.equal(events[1].evidenceTruth, "native_response_returned");
@@ -373,7 +557,7 @@ test("warn mode surfaces one bounded warning only on supported context hooks", a
       { additionalContext: SAFE_WARN_MESSAGE },
     );
   }
-  for (const eventName of ["userPromptSubmitted", "subagentStop"] as const) {
+  for (const eventName of ["userPromptTransformed", "userPromptSubmitted", "subagentStop"] as const) {
     assert.deepEqual(
       await runCopilotHook(eventName, payload(eventName), backendControlledEnv, dependencies([malicious], events)),
       {},
@@ -381,6 +565,7 @@ test("warn mode surfaces one bounded warning only on supported context hooks", a
   }
   assert.ok(events.slice(0, 3).every((event) => event.warnDelivery === "delivered"));
   assert.ok(events.slice(3).every((event) => event.warnDelivery === "unsupported"));
+  assert.ok(events.slice(3).every((event) => event.nativeAction === "allowed"));
   assert.doesNotMatch(JSON.stringify(events), /tool result|tool failed|user prompt|subagent output/u);
 });
 
@@ -429,10 +614,12 @@ test("agentStop ignores transcript paths instead of reconstructing output", asyn
 
 test("runtime check markers become the exact repair request fingerprint", () => {
   const marker = "silmaril-runtime-check:12345678-1234-4123-8123-123456789abc";
-  const target = buildHookTarget("userPromptSubmitted", {
+  const target = buildHookTarget("userPromptTransformed", {
     sessionId: "session-1",
     timestamp: 1,
+    cwd: "/tmp/project",
     prompt: `Verify ${marker}`,
+    transformedPrompt: `Verify ${marker}`,
   });
   assert.equal(
     target?.requestFingerprint,
@@ -520,13 +707,13 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.3.5");
+  assert.equal(packageJson.version, "0.3.6");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.deepEqual(Object.keys(hooks.hooks), [
-    "userPromptSubmitted",
+    "userPromptTransformed",
     "preToolUse",
     "postToolUse",
     "postToolUseFailure",
@@ -542,7 +729,7 @@ test("classify metadata includes the mac computer name without an endpoint id", 
   delete env.SILMARIL_ENDPOINT_ID;
   const stderr = await captureStderr(async () => {
     assert.deepEqual(
-      await runCopilotHook("userPromptSubmitted", payload("userPromptSubmitted"), env, {
+      await runCopilotHook("userPromptTransformed", payload("userPromptTransformed"), env, {
         ...dependencies([{ prediction: "BENIGN" }], events, calls),
         deviceName: () => "  Office Mac \n",
       }),
@@ -569,7 +756,7 @@ test("invalid or failed device-name lookup still classifies and drops spoofed me
   const env = { ...BASE_ENV, SILMARIL_DEBUG: "true" };
   const stderr = await captureStderr(async () => {
     assert.deepEqual(
-      await runCopilotHook("userPromptSubmitted", payload("userPromptSubmitted"), env, {
+      await runCopilotHook("userPromptTransformed", payload("userPromptTransformed"), env, {
         ...dependencies([{ prediction: "BENIGN" }], events, calls),
         deviceName: () => {
           throw new Error("scutil failed for Office Mac");
