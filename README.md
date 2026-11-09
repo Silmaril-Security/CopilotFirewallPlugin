@@ -10,27 +10,28 @@ A governance action of `block` is a block candidate even when the prediction is 
 
 ## Install
 
-Release [v0.3.5](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.5)
-remains the latest published immutable release. Current source is the unreleased
-v0.3.6 candidate and targets the GitHub Copilot CLI
-1.0.108 `userPromptTransformed` contract. The disposable
-[`native-copilot`](docs/NATIVE_QUALIFICATION.md) CI job qualifies primary and
-resume behavior against the checksum-pinned native 1.0.108 host. It also
-qualifies FIFO native queueing through the pinned public Copilot SDK
+Release [v0.3.6](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.6)
+is the latest published immutable release. Its annotated tag peels to source
+commit [`9ae9d11f6cd7703b6f1920f62403967c45aa37af`](https://github.com/Silmaril-Security/CopilotFirewallPlugin/commit/9ae9d11f6cd7703b6f1920f62403967c45aa37af)
+and targets the GitHub Copilot CLI 1.0.108 `userPromptTransformed` contract.
+The recorded evidence from the disposable
+[`native-copilot`](docs/NATIVE_QUALIFICATION.md) CI job covers primary and
+resume behavior against the checksum-pinned native 1.0.108 host. It also covers
+FIFO native queueing through the pinned public Copilot SDK
 `session.send({mode: "enqueue"})` JSON-RPC contract. Deterministic handler tests
-alone do not establish native behavior. For a reproducible installation
-of the published release, check out v0.3.5 and use
-Copilot CLI's supported local-directory form:
+alone do not establish native behavior. For a reproducible installation of the
+published release, check out v0.3.6 and use Copilot CLI's supported
+local-directory form:
 
 ```sh
-git clone --branch v0.3.5 --depth 1 https://github.com/Silmaril-Security/CopilotFirewallPlugin.git
+git clone https://github.com/Silmaril-Security/CopilotFirewallPlugin.git
 cd CopilotFirewallPlugin
+git checkout --detach v0.3.6
 copilot plugin install .
 ```
 
-To install current source instead, Copilot CLI also supports
-`copilot plugin install Silmaril-Security/CopilotFirewallPlugin`. The repository
-form follows the default branch; no `@tag` syntax is claimed here.
+The repository install form follows the default branch; it does not pin the
+immutable release tag.
 
 SilmarilMacOS manages the private runtime configuration at `~/.copilot/silmaril-firewall.json`. `COPILOT_HOME` changes that directory, and `SILMARIL_CONFIG_PATH` selects another file. The plugin uses a file only when it is schema version 1, no larger than 64 KiB, a regular non-symlink file owned by the current user when a process uid is available, with no group or other permissions, and with typed values for the fields it sets. That file is the only configuration source, so `enabled: false` or missing credentials fail open without using `SILMARIL_*` variables. A missing file falls back to those variables, including `SILMARIL_ENABLED`. An invalid file fails open and does not use the environment. The plugin also fails open when the Firewall API is unavailable or the hook runtime hits an error. A failed evidence write does not undo a deny, replacement, or stop already chosen.
 
