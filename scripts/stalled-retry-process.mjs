@@ -10,5 +10,11 @@ const started = performance.now();
 let hookMS;
 // Observe natural process exit after every SDK timer has drained, excluding startup.
 process.once("exit", () => writeSync(1, JSON.stringify({ attempts, hookMS, processMS: performance.now() - started }) + "\n"));
-await hook.runCopilotHook("userPromptSubmitted", { prompt: "synthetic test" }, env);
+await hook.runCopilotHook("userPromptTransformed", {
+  sessionId: "synthetic-session",
+  timestamp: 1,
+  cwd: "/tmp",
+  prompt: "synthetic test",
+  transformedPrompt: "synthetic transformed test",
+}, env);
 hookMS = performance.now() - started;

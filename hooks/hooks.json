@@ -1,10 +1,10 @@
 {
   "version": 1,
   "hooks": {
-    "userPromptSubmitted": [
+    "userPromptTransformed": [
       {
         "type": "command",
-        "bash": "node ./dist/copilot-hook.js userPromptSubmitted",
+        "bash": "node ./dist/copilot-hook.js userPromptTransformed",
         "timeoutSec": 12
       }
     ],

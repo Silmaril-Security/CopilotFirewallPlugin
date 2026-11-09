@@ -2,16 +2,20 @@
 
 Silmaril Firewall protection for GitHub Copilot CLI.
 
-The plugin classifies Copilot user prompts, tool calls, tool results, tool failures, and subagent responses from their current native hook payloads. Every native hook event produces at most one classification of that current event. The plugin does not read transcript history or send prior turns. Incremental conversation state belongs to the Firewall backend, which keys its sequence cache on `metadata.conversationId`. This hook sends the Copilot session as `metadata.sessionId` and does not set the backend sequence key `metadata.conversationId`, so accumulated conversation state is not established by this integration.
+The plugin classifies Copilot model-facing transformed prompts, tool calls, tool results, tool failures, and subagent responses from their current native hook payloads. Every native hook event produces at most one classification of that current event. The plugin does not read transcript history or send prior turns. It maps Copilot's validated `sessionId` to both `metadata.sessionId` and `metadata.conversationId`, so events in one session share the Firewall sequence key while different sessions remain isolated.
 
-Shadow records that classification without changing Copilot content. Warn preserves content and returns one bounded content-free `additionalContext` warning on the events that support it. Block uses Copilot-native deny and stop responses, and replaces malicious tool results with fixed content before they reach the model.
+Shadow records that classification without changing Copilot content. Warn preserves content and returns one bounded content-free `additionalContext` warning on the events that support it. The transformed-prompt hook has no native Warn output, so Warn leaves those bytes unchanged and records unsupported warning delivery. Block uses Copilot-native deny and stop responses, replaces malicious tool results with fixed content, and replaces malicious transformed prompts with the same bounded fixed text before they reach the model.
 
 A governance action of `block` is a block candidate even when the prediction is benign. Native deny, replacement, and stop still require block mode and a supported boundary. Warn mode uses the warning instead of a deny, and shadow mode leaves content unchanged.
 
 ## Install
 
 Release [v0.3.5](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.5)
-is available. For a reproducible installation, check out that release and use
+remains the latest published immutable release. Current source is the unreleased
+v0.3.6 candidate and targets the GitHub Copilot CLI
+1.0.108 `userPromptTransformed` contract. Native batch and resume qualification
+is pending; the deterministic handler and loopback tests do not establish it. For a reproducible installation
+of the published release, check out v0.3.5 and use
 Copilot CLI's supported local-directory form:
 
 ```sh
@@ -51,12 +55,14 @@ For a block candidate, the current event behaves as follows:
 
 | Event | Warn | Block |
 | --- | --- | --- |
-| `userPromptSubmitted` | unchanged (`warnDelivery` `unsupported`) | unchanged (`blockUnavailable` true) |
+| `userPromptTransformed` | unchanged (`warnDelivery` `unsupported`) | returns only bounded `modifiedTransformedPrompt`; the turn continues with fixed replacement text |
 | `preToolUse` | one `additionalContext` warning | `permissionDecision` `deny` with the fixed block message |
 | `postToolUse` | one `additionalContext` warning | replaces the tool result text and returns that fixed message as `additionalContext` |
 | `postToolUseFailure` | one `additionalContext` warning | unchanged (`blockUnavailable` true) |
 | `agentStop` | not classified | not classified |
 | `subagentStop` | unchanged (`warnDelivery` `unsupported`) | `decision` `block` with the fixed block message, unless `stopHookActive` is true |
+
+`userPromptSubmitted` is not registered or classified because command-hook output for that event is ignored and classifying it would duplicate the primary transformed-prompt scan. The compatibility CLI entry point accepts the old event name and returns `{}`. Copilot invokes `userPromptTransformed` once for the primary message and once for every preceding message in a batched submission. Benign, Shadow, Warn, and failed classifications return `{}`, preserving the model-facing bytes exactly. In Block mode only a block candidate returns `modifiedTransformedPrompt`; this replaces model-facing and persisted session-history content but does not reject or handle the turn. Copilot's documented contract replays that stored replacement unchanged on resume.
 
 `agentStop` stays registered, and the handler ignores its payload, including `transcriptPath`. `subagentStop` classifies the current `response`. When `stopHookActive` is true, block mode leaves that response unchanged and sets `blockUnavailable`. Tool events identify a tool, or an MCP tool when the name is `mcp__<server>__<tool>`. Prompt and subagent events identify an agent. The plugin passes that native identity through the SDK's typed governance option. SDK 0.8.2 owns canonical top-level `resource` serialization, including `parent_id` for a recognized MCP tool; governance metadata remains compatibility attribution.
 
