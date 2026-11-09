@@ -19,9 +19,93 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: 22.12.0
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: git diff --exit-code -- dist/copilot-hook.js
+
+  native-copilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify and extract Copilot CLI 1.0.108
+        env:
+          COPILOT_ASSET_URL: https://github.com/github/copilot-cli/releases/download/v1.0.108/copilot-linux-x64.tar.gz
+          COPILOT_ASSET_SHA256: 4c14e320c5cd10234ad56cba855509206e4518e1c04a780ac05a8e1c124bd97d
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/copilot-linux-x64-1.0.108.tar.gz"
+          extract_root="$RUNNER_TEMP/copilot-linux-x64-1.0.108"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" "$COPILOT_ASSET_URL"
+          printf '%s  %s\n' "$COPILOT_ASSET_SHA256" "$archive" | sha256sum --check -
+          member="$(
+            python3 - "$archive" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          archive = sys.argv[1]
+          with tarfile.open(archive, "r:gz") as bundle:
+              members = bundle.getmembers()
+          for item in members:
+              name = pathlib.PurePosixPath(item.name)
+              if (
+                  name.is_absolute()
+                  or ".." in name.parts
+                  or not (item.isfile() or item.isdir())
+              ):
+                  raise SystemExit(f"unsafe archive member: {item.name}")
+          candidates = [
+              item.name
+              for item in members
+              if item.isfile() and pathlib.PurePosixPath(item.name).name == "copilot"
+          ]
+          if len(candidates) != 1:
+              raise SystemExit(f"expected one copilot executable, found {len(candidates)}")
+          print(candidates[0])
+          PY
+          )"
+          mkdir -p "$extract_root"
+          chmod 700 "$extract_root"
+          tar --extract --gzip --file "$archive" --directory "$extract_root" \
+            --no-same-owner --no-same-permissions
+          copilot_bin="$extract_root/$member"
+          test -f "$copilot_bin"
+          chmod 700 "$copilot_bin"
+          {
+            echo "COPILOT_ASSET_PATH=$archive"
+            echo "COPILOT_BIN=$copilot_bin"
+            echo "COPILOT_EXTRACT_ROOT=$extract_root"
+          } >> "$GITHUB_ENV"
+      - name: Qualify transformed prompts and resume on the native host
+        env:
+          NATIVE_QUALIFICATION_RECEIPT: ${{ runner.temp }}/copilot-native-qualification.json
+        run: npm run test:native
+      - name: Print native qualification receipt
+        if: always()
+        env:
+          NATIVE_QUALIFICATION_RECEIPT: ${{ runner.temp }}/copilot-native-qualification.json
+        run: |
+          if [[ -f "$NATIVE_QUALIFICATION_RECEIPT" ]]; then
+            cat "$NATIVE_QUALIFICATION_RECEIPT"
+          fi
+      - name: Retain native qualification receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: copilot-native-qualification
+          path: ${{ runner.temp }}/copilot-native-qualification.json
+          if-no-files-found: warn
+          retention-days: 14
