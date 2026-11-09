@@ -20,7 +20,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "npm run typecheck",
-    "test": "npm run build && node --import tsx --test test/*.test.ts && node scripts/test-classification-deadline.mjs",
+    "test": "npm run build && node --import tsx --test test/*.test.ts test/*.test.mjs && node scripts/test-classification-deadline.mjs",
+    "test:native": "node scripts/native-qualification.mjs",
     "pack:dry": "npm pack --dry-run",
     "test:deadline": "npm run build && node scripts/test-classification-deadline.mjs"
   },
@@ -28,6 +29,7 @@
     "@silmaril-security/sdk": "0.8.2"
   },
   "devDependencies": {
+    "@github/copilot-sdk": "1.0.30-preview.0",
     "@types/node": "^24.0.0",
     "esbuild": "0.28.1",
     "tsx": "^4.20.6",

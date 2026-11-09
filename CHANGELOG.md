@@ -12,9 +12,13 @@
   metadata without changing existing non-transformed request identities.
 - Add deterministic primary, preceding-batch, retry, resume-fixture, and
   loopback wire-contract coverage.
-- Target the GitHub Copilot CLI 1.0.108 transformed-prompt contract. Native batch and resume qualification remains
-  pending because no approved 1.0.108 host copy or no-inference host harness
-  was available in this worktree.
+- Add a disposable CI qualification gate for the checksum-pinned GitHub
+  Copilot CLI 1.0.108 host, loopback-only model and classifier fixtures,
+  exact primary transformed bytes, fixed Block replacement, and resume history.
+- Pin the public Copilot SDK v1.0.30-preview.0 queue contract and qualify
+  `session.send` FIFO enqueue behavior against the exact 1.0.108 executable
+  with a gated first model response, three ordered callbacks, and three ordered
+  model turns.
 
 ## 0.3.5
 

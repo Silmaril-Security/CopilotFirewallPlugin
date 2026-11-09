@@ -13,8 +13,12 @@ A governance action of `block` is a block candidate even when the prediction is 
 Release [v0.3.5](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.5)
 remains the latest published immutable release. Current source is the unreleased
 v0.3.6 candidate and targets the GitHub Copilot CLI
-1.0.108 `userPromptTransformed` contract. Native batch and resume qualification
-is pending; the deterministic handler and loopback tests do not establish it. For a reproducible installation
+1.0.108 `userPromptTransformed` contract. The disposable
+[`native-copilot`](docs/NATIVE_QUALIFICATION.md) CI job qualifies primary and
+resume behavior against the checksum-pinned native 1.0.108 host. It also
+qualifies FIFO native queueing through the pinned public Copilot SDK
+`session.send({mode: "enqueue"})` JSON-RPC contract. Deterministic handler tests
+alone do not establish native behavior. For a reproducible installation
 of the published release, check out v0.3.5 and use
 Copilot CLI's supported local-directory form:
 
