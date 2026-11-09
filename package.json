@@ -21,7 +21,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "npm run typecheck",
     "test": "npm run build && node --import tsx --test test/*.test.ts test/*.test.mjs && node scripts/test-classification-deadline.mjs",
-    "test:native": "node scripts/native-qualification.mjs",
+    "test:native": "node --import tsx scripts/native-qualification.mjs",
     "pack:dry": "npm pack --dry-run",
     "test:deadline": "npm run build && node scripts/test-classification-deadline.mjs"
   },
@@ -36,6 +36,6 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   }
 }

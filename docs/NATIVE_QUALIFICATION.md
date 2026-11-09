@@ -60,11 +60,16 @@ The job fails unless all of these hold:
 3. An initial blocked turn uses a fixed session UUID. A second process resumes
    that UUID with `--resume <id> -p <next-turn>`.
 4. The resumed model request contains the stored fixed replacement and the
-   exact next-turn transformed bytes, contains no original poison, and causes
-   no callback for replayed history.
+   exact next-turn transformed bytes as its current user item, contains no
+   original poison, and causes no callback for replayed history. A stored
+   replacement found elsewhere in history cannot satisfy the current-item
+   assertion.
 5. The callback session and conversation IDs remain stable, and there is
-   exactly one local evidence event per callback. Blocked turns must record
-   `content_replaced` and `native_response_returned`.
+   exactly one local evidence event per callback. The harness derives expected
+   request and session fingerprints through the production identity and
+   evidence builders, then requires an exact one-to-one identity multiset with
+   no duplicate or missing event. Blocked turns must record `content_replaced`
+   and `native_response_returned`.
 6. The official `@github/copilot-sdk` v1.0.30-preview.0
    (`copilotCliVersion` `1.0.108-0`) starts the exact 1.0.108 executable over
    its public stdio JSON-RPC transport. The first model response is gated while
@@ -97,6 +102,9 @@ overrides its bundled runtime with the checksum-verified final 1.0.108
 executable and verifies the behavior described above.
 
 ## Running
+
+Development and qualification require Node.js 22.12.0 or newer, matching the
+pinned Copilot SDK's Node 22 engine floor.
 
 The native command is intentionally CI/container-only:
 

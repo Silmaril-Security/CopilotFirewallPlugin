@@ -41,7 +41,8 @@ The configured timeout bounds the entire classification, including throttling re
 
 ## Develop
 
-Node.js 22 or newer:
+Node.js 22.12.0 or newer is required for development and qualification. This
+matches the pinned Copilot SDK's Node 22 engine floor:
 
 ```sh
 npm ci

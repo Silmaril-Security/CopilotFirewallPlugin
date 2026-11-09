@@ -19,6 +19,8 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildHookTarget } from "../src/copilot-hook.ts";
+import { buildLocalProtectionEvent } from "../src/local-evidence.ts";
 
 export const EXPECTED_COPILOT_VERSION = "1.0.108";
 export const EXPECTED_ASSET_SHA256 =
@@ -92,6 +94,42 @@ export function assertExactModelText(request, expected) {
   assert.ok(
     strings.includes(expected),
     `Responses input did not contain the exact ${byteReceipt(expected).sha256} text`,
+  );
+  return byteReceipt(expected);
+}
+
+export function responseUserTexts(request) {
+  const input = request?.body?.input;
+  assert.ok(Array.isArray(input), "Responses input must be an array");
+  const texts = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object" || item.role !== "user") continue;
+    if (typeof item.content === "string") {
+      texts.push(item.content);
+      continue;
+    }
+    if (!Array.isArray(item.content)) continue;
+    for (const content of item.content) {
+      if (
+        content
+        && typeof content === "object"
+        && content.type === "input_text"
+        && typeof content.text === "string"
+      ) {
+        texts.push(content.text);
+      }
+    }
+  }
+  return texts;
+}
+
+export function assertCurrentUserText(request, expected) {
+  const userTexts = responseUserTexts(request);
+  assert.ok(userTexts.length > 0, "Responses input omitted the current user item");
+  assert.equal(
+    userTexts.at(-1),
+    expected,
+    "Current Responses user item did not equal the current transformed callback",
   );
   return byteReceipt(expected);
 }
@@ -595,6 +633,77 @@ async function listEvidence(directory) {
     String(left.requestFingerprint).localeCompare(String(right.requestFingerprint)));
 }
 
+export function productEvidenceIdentity(callback) {
+  const text = callback?.body?.text;
+  const sessionId = callback?.body?.metadata?.sessionId;
+  assert.equal(typeof text, "string", "Native callback omitted transformed text");
+  assert.equal(typeof sessionId, "string", "Native callback omitted session identity");
+  assert.match(
+    text,
+    /\bsilmaril-runtime-check:[A-Za-z0-9-]{16,128}\b/u,
+    "Native callback omitted its synthetic runtime marker",
+  );
+  const target = buildHookTarget("userPromptTransformed", {
+    sessionId,
+    timestamp: 0,
+    cwd: "/native-qualification",
+    prompt: text,
+    transformedPrompt: text,
+  });
+  assert.ok(target, "Production transformed-prompt identity rejected native callback");
+  assert.equal(target.text, text, "Production identity changed native callback bytes");
+  assert.equal(target.sessionId, sessionId, "Production identity changed native session");
+  const productEvent = buildLocalProtectionEvent({
+    pluginVersion: "0.3.6",
+    hook: "user_input",
+    mode: "block",
+    requestFingerprint: target.requestFingerprint,
+    sessionId,
+    classification: { prediction: "BENIGN" },
+    policyDecision: "allow",
+    nativeAction: "allowed",
+    occurredAt: new Date(0),
+  });
+  assert.equal(
+    typeof productEvent.sessionFingerprint,
+    "string",
+    "Production evidence omitted session fingerprint",
+  );
+  return {
+    requestFingerprint: target.requestFingerprint,
+    sessionFingerprint: productEvent.sessionFingerprint,
+  };
+}
+
+function evidenceIdentityKey(identity) {
+  assert.equal(typeof identity?.requestFingerprint, "string");
+  assert.equal(typeof identity?.sessionFingerprint, "string");
+  return `${identity.requestFingerprint}\u0000${identity.sessionFingerprint}`;
+}
+
+export function assertEvidenceMatchesCallbacks(callbacks, events) {
+  const expected = callbacks.map(productEvidenceIdentity);
+  const expectedKeys = expected.map(evidenceIdentityKey);
+  const actualKeys = events.map(evidenceIdentityKey);
+  assert.equal(
+    new Set(expectedKeys).size,
+    expectedKeys.length,
+    "Native callbacks did not have unique evidence identities",
+  );
+  assert.equal(
+    new Set(actualKeys).size,
+    actualKeys.length,
+    "Duplicate native evidence identity",
+  );
+  assert.deepEqual(
+    actualKeys.toSorted(),
+    expectedKeys.toSorted(),
+    "Native evidence identities did not match callbacks one-to-one",
+  );
+  return expected.toSorted((left, right) =>
+    evidenceIdentityKey(left).localeCompare(evidenceIdentityKey(right)));
+}
+
 function callbackReceipt(request) {
   return {
     hook: request.body.hook,
@@ -859,7 +968,11 @@ export async function qualifyNativeCopilot(env = process.env) {
     assert.equal(model.requests.length, 4, "Resume model request count changed");
     assert.equal(classifier.requests[3].decision, "benign");
     assert.equal(classifier.requests[3].body.metadata?.sessionId, SESSIONS.resume);
-    assertExactModelText(model.requests[3], classifier.requests[3].body.text);
+    assert.ok(
+      classifier.requests[3].body.text.includes(PROMPTS.resumeNext),
+      "Resume callback did not contain the current next-turn marker",
+    );
+    assertCurrentUserText(model.requests[3], classifier.requests[3].body.text);
     assertExactModelText(model.requests[3], SAFE_BLOCK_MESSAGE);
     assertTextAbsent(model.requests[3], PROMPTS.resumePoison);
     assertTextAbsent(model.requests[3], classifier.requests[2].body.text);
@@ -885,6 +998,10 @@ export async function qualifyNativeCopilot(env = process.env) {
     receipt.modelRequests = model.requests.map(modelReceipt);
     receipt.evidence = await listEvidence(evidenceDirectory);
     assert.equal(receipt.evidence.length, 7, "Expected one evidence event per native callback");
+    receipt.evidenceIdentities = assertEvidenceMatchesCallbacks(
+      classifier.requests,
+      receipt.evidence,
+    );
     assert.equal(
       receipt.evidence.filter((event) =>
         event.nativeAction === "content_replaced"

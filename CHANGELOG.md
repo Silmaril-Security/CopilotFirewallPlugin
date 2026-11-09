@@ -19,6 +19,9 @@
   `session.send` FIFO enqueue behavior against the exact 1.0.108 executable
   with a gated first model response, three ordered callbacks, and three ordered
   model turns.
+- Bind resumed-turn qualification to the current model user item, require an
+  exact production-fingerprint join between callbacks and evidence, and align
+  the declared Node.js minimum with the SDK at 22.12.0.
 
 ## 0.3.5
 
