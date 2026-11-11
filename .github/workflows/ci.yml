@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: validation-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -27,6 +31,7 @@ jobs:
       - run: git diff --exit-code -- dist/copilot-hook.js
 
   native-copilot:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
