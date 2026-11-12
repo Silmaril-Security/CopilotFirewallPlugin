@@ -137,11 +137,15 @@ and `CUSTOMER_NATIVE_API_KEY` makes the loopback classifier forward each
 request to that endpoint and record its duration and upstream
 `{prediction, mode, action}`. Live mode runs only `allow` and
 `tool-response-block`, with the shared customer attack text as the poison; it
-skips the prompt scenarios and writes only the shared receipt. A failure
-caused by the classifier is reported as `BLOCKED` with one of
+skips the prompt scenarios and writes only the shared receipt. A classifier
+fault in a scenario is reported as `BLOCKED` with one of
 `classifier_request_failed`, `classifier_exceeded_plugin_deadline`,
-`classifier_flagged_benign_control`, `classifier_did_not_flag_attack`, or
-`tenant_not_in_block_mode`. CI runs the live step on manual dispatch with
+`classifier_flagged_benign_control`, or `classifier_did_not_flag_attack`,
+also when the tool checks of that scenario passed. The harness configures the
+plugin with `SILMARIL_MODE=block`, and an explicit local mode takes precedence
+over the mode in a classifier response, so the upstream `mode` is recorded
+but never decides the status. A missing or invalid live configuration still
+writes a `FAIL` receipt. CI runs the live step on manual dispatch with
 `live` set, or when `vars.CUSTOMER_NATIVE_ENABLED` is `true`; the nightly
 schedule runs only with that variable.
 

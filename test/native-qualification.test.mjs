@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   ACCEPTANCE_SCHEMA,
@@ -19,6 +22,7 @@ import {
   liveEnforcementBlocker,
   productEvidenceIdentity,
   promptScenario,
+  qualifyNativeCopilot,
   responseUserTexts,
   startClassifier,
   toolScenarios,
@@ -312,13 +316,6 @@ test("live classifier failures are attributed to a named blocker instead of a pr
     "classifier_exceeded_plugin_deadline",
   );
   assert.equal(
-    liveEnforcementBlocker(
-      LIVE_TOOL_RESPONSE_BLOCK,
-      attack("malicious", { upstream: { mode: "shadow" } }),
-    ),
-    "tenant_not_in_block_mode",
-  );
-  assert.equal(
     liveEnforcementBlocker(LIVE_ALLOW, [
       classifierRequest("tool_call", JSON.stringify(LIVE_ALLOW.toolCall.arguments), "malicious"),
     ]),
@@ -330,6 +327,36 @@ test("live classifier failures are attributed to a named blocker instead of a pr
       attack("malicious", { upstream: { mode: "block" } }),
     ),
     undefined,
+  );
+});
+
+test("live acceptance passes on local block mode whatever mode the classifier reports", () => {
+  for (const mode of [null, "shadow", "block"]) {
+    const enforced = evaluateToolScenario(LIVE_TOOL_RESPONSE_BLOCK, {
+      ...toolResponseObservation(LIVE_TOOL_RESPONSE_BLOCK, "malicious", SAFE_BLOCK_MESSAGE, {
+        upstream: { prediction: "MALICIOUS", mode, action: "allow" },
+      }),
+      live: true,
+    });
+    assert.equal(enforced.status, "PASS");
+    assert.equal(enforced.blocker, undefined);
+  }
+});
+
+test("a live classifier fault blocks a scenario whose tool checks all passed", () => {
+  const observation = {
+    ...toolResponseObservation(LIVE_TOOL_RESPONSE_BLOCK, "malicious", SAFE_BLOCK_MESSAGE, {
+      durationMs: 2_500,
+    }),
+    live: true,
+  };
+  const slow = evaluateToolScenario(LIVE_TOOL_RESPONSE_BLOCK, observation);
+  assert.equal(Object.values(slow.checks).every(Boolean), true);
+  assert.equal(slow.status, "BLOCKED");
+  assert.equal(slow.blocker, "classifier_exceeded_plugin_deadline");
+  assert.equal(
+    evaluateToolScenario(LIVE_TOOL_RESPONSE_BLOCK, { ...observation, live: false }).status,
+    "PASS",
   );
 });
 
@@ -358,6 +385,32 @@ test("live classifier configuration requires an https endpoint and a key", () =>
     }),
     /CUSTOMER_NATIVE_API_KEY/u,
   );
+});
+
+test("a live run without its API key still writes a failing acceptance receipt", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "copilot-native-receipt-"));
+  const receiptPath = path.join(directory, "native-acceptance", "live-receipt.json");
+  try {
+    await assert.rejects(
+      qualifyNativeCopilot({
+        CUSTOMER_NATIVE_CLASSIFIER: "live",
+        CUSTOMER_NATIVE_API_URL: "https://cascade.invalid/classify",
+        GITHUB_SHA: "b".repeat(40),
+        NATIVE_ACCEPTANCE_RECEIPT: receiptPath,
+      }),
+      /CUSTOMER_NATIVE_API_KEY/u,
+    );
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    assert.equal(receipt.schema, ACCEPTANCE_SCHEMA);
+    assert.equal(receipt.status, "FAIL");
+    assert.equal(receipt.classifier, "live");
+    assert.equal(receipt.source_sha, "b".repeat(40));
+    assert.deepEqual(receipt.scenarios, []);
+    assert.deepEqual(receipt.classifier_requests, []);
+    assert.match(receipt.error.message, /CUSTOMER_NATIVE_API_KEY/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("live classifier proxy forwards each request upstream and records the upstream verdict", async () => {

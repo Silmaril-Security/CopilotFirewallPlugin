@@ -359,8 +359,12 @@ async function closeServer(server) {
   });
 }
 
+function liveRequested(env) {
+  return env.CUSTOMER_NATIVE_CLASSIFIER === "live";
+}
+
 export function liveClassifierConfig(env) {
-  if (env.CUSTOMER_NATIVE_CLASSIFIER !== "live") return undefined;
+  if (!liveRequested(env)) return undefined;
   const url = env.CUSTOMER_NATIVE_API_URL;
   const key = env.CUSTOMER_NATIVE_API_KEY;
   assert.ok(
@@ -938,9 +942,10 @@ export function liveEnforcementBlocker(scenario, classifierRequests) {
     !isAttack(request) && request.decision === "malicious")) {
     return "classifier_flagged_benign_control";
   }
-  const attack = classifierRequests.find(isAttack);
-  if (attack && attack.decision !== "malicious") return "classifier_did_not_flag_attack";
-  if (attack && attack.upstream?.mode !== "block") return "tenant_not_in_block_mode";
+  if (classifierRequests.some((request) =>
+    isAttack(request) && request.decision !== "malicious")) {
+    return "classifier_did_not_flag_attack";
+  }
   return undefined;
 }
 
@@ -957,12 +962,12 @@ export function evaluateToolScenario(scenario, observation) {
     evidence: observation.evidence,
   });
   const passed = Object.values(checks).every(Boolean);
-  const blocker = passed || !observation.live
-    ? undefined
-    : liveEnforcementBlocker(scenario, observation.classifierRequests);
+  const blocker = observation.live
+    ? liveEnforcementBlocker(scenario, observation.classifierRequests)
+    : undefined;
   return {
     id: scenario.id,
-    status: passed ? "PASS" : blocker ? "BLOCKED" : "FAIL",
+    status: blocker ? "BLOCKED" : passed ? "PASS" : "FAIL",
     ...(blocker ? { blocker } : {}),
     ...(scenario.effectText ? { effect_present: observation.effectText !== undefined } : {}),
     checks,
@@ -1300,25 +1305,24 @@ async function writeReceipt(receiptPath, receipt) {
   });
 }
 
-export async function qualifyNativeCopilot(env = process.env) {
+function qualificationConfig(env) {
   const live = liveClassifierConfig(env);
   const binary = env.COPILOT_BIN;
   const assetPath = env.COPILOT_ASSET_PATH;
   const receiptPath = env.NATIVE_QUALIFICATION_RECEIPT;
-  const acceptanceReceiptPath = env.NATIVE_ACCEPTANCE_RECEIPT ?? DEFAULT_ACCEPTANCE_RECEIPT;
   assert.ok(binary && path.isAbsolute(binary), "COPILOT_BIN must be an absolute path");
   assert.ok(assetPath && path.isAbsolute(assetPath), "COPILOT_ASSET_PATH must be absolute");
   assert.ok(
     live || (receiptPath && path.isAbsolute(receiptPath)),
     "NATIVE_QUALIFICATION_RECEIPT must be absolute",
   );
-  assert.ok(
-    path.isAbsolute(acceptanceReceiptPath),
-    "NATIVE_ACCEPTANCE_RECEIPT must be absolute",
-  );
+  return { live, binary, assetPath, receiptPath };
+}
 
+async function runQualification({ live, binary, assetPath, receiptPath }, env, acceptance) {
   const root = await mkdtemp(path.join(os.tmpdir(), `copilot-native-${process.pid}-`));
   await chmod(root, 0o700);
+  acceptance.redactions.unshift([root, "<private-root>"]);
   const classifier = startClassifier();
   const model = startModel();
   const acceptanceClassifier = startClassifier({ live });
@@ -1350,23 +1354,8 @@ export async function qualifyNativeCopilot(env = process.env) {
       loopbackServersClosed: false,
     },
   };
-  const acceptance = {
-    sourceSha: env.GITHUB_SHA,
-    hostVersion: undefined,
-    plugin: { installed_bytes_match: false, install_command: INSTALL_COMMAND },
-    promptChecks: {
-      primary_allow_exact_bytes: false,
-      primary_block_replaced: false,
-      resume_keeps_replacement: false,
-      sdk_queue_fifo: false,
-      evidence_one_to_one: false,
-    },
-    toolScenarios: [],
-  };
 
-  let failure;
   let evidenceDirectory;
-  let acceptanceReceipt;
   try {
     const actualAssetHash = await sha256File(assetPath);
     receipt.asset.actualSha256 = actualAssetHash;
@@ -1558,12 +1547,13 @@ export async function qualifyNativeCopilot(env = process.env) {
       }));
     }
   } catch (error) {
-    failure = error;
     receipt.error = {
       name: error instanceof Error ? error.name : "Error",
       message: error instanceof Error ? error.message : String(error),
     };
+    throw error;
   } finally {
+    acceptance.classifierRequests = [...classifier.requests, ...acceptanceClassifier.requests];
     receipt.callbacks = classifier.requests.map(callbackReceipt);
     receipt.modelRequests = model.requests.map(modelReceipt);
     if (evidenceDirectory) {
@@ -1587,28 +1577,59 @@ export async function qualifyNativeCopilot(env = process.env) {
       .then(() => false)
       .catch((error) => error?.code === "ENOENT");
     if (!live) await writeReceipt(receiptPath, receipt);
-    acceptanceReceipt = buildAcceptanceReceipt({
-      sourceSha: acceptance.sourceSha,
-      live: Boolean(live),
-      plugin: acceptance.plugin,
-      hostVersion: acceptance.hostVersion,
-      scenarios: [
-        ...(live ? [] : [promptScenario(acceptance.promptChecks)]),
-        ...acceptance.toolScenarios,
-      ],
-      classifierRequests: [...classifier.requests, ...acceptanceClassifier.requests],
-      error: failure,
-      redactions: [
-        [root, "<private-root>"],
-        [REPOSITORY_ROOT, "<repository>"],
-        [os.homedir(), "<home>"],
-      ],
-    });
-    await writeReceipt(acceptanceReceiptPath, acceptanceReceipt);
   }
+  return receipt;
+}
 
+export async function qualifyNativeCopilot(env = process.env) {
+  const acceptanceReceiptPath = env.NATIVE_ACCEPTANCE_RECEIPT ?? DEFAULT_ACCEPTANCE_RECEIPT;
+  assert.ok(
+    path.isAbsolute(acceptanceReceiptPath),
+    "NATIVE_ACCEPTANCE_RECEIPT must be absolute",
+  );
+  const live = liveRequested(env);
+  const acceptance = {
+    sourceSha: env.GITHUB_SHA,
+    hostVersion: undefined,
+    plugin: { installed_bytes_match: false, install_command: INSTALL_COMMAND },
+    promptChecks: {
+      primary_allow_exact_bytes: false,
+      primary_block_replaced: false,
+      resume_keeps_replacement: false,
+      sdk_queue_fifo: false,
+      evidence_one_to_one: false,
+    },
+    toolScenarios: [],
+    classifierRequests: [],
+    redactions: [
+      [REPOSITORY_ROOT, "<repository>"],
+      [os.homedir(), "<home>"],
+    ],
+  };
+
+  let failure;
+  let qualification;
+  try {
+    qualification = await runQualification(qualificationConfig(env), env, acceptance);
+  } catch (error) {
+    failure = error;
+  }
+  const acceptanceReceipt = buildAcceptanceReceipt({
+    sourceSha: acceptance.sourceSha,
+    live,
+    plugin: acceptance.plugin,
+    hostVersion: acceptance.hostVersion,
+    scenarios: [
+      ...(live ? [] : [promptScenario(acceptance.promptChecks)]),
+      ...acceptance.toolScenarios,
+    ],
+    classifierRequests: acceptance.classifierRequests,
+    error: failure,
+    redactions: acceptance.redactions,
+  });
+  await writeReceipt(acceptanceReceiptPath, acceptanceReceipt);
   if (failure) throw failure;
-  return { qualification: receipt, acceptance: acceptanceReceipt };
+  return { qualification, acceptance: acceptanceReceipt };
 }
 
 async function main() {
