@@ -5,6 +5,14 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      live:
+        type: boolean
+        description: Include the tool scenarios against the customer Cascade classifier
+        default: false
+  schedule:
+    - cron: '23 6 * * *'
 
 concurrency:
   group: validation-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -15,6 +23,7 @@ permissions:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,7 +40,7 @@ jobs:
       - run: git diff --exit-code -- dist/copilot-hook.js
 
   native-copilot:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.event_name != 'schedule' || vars.CUSTOMER_NATIVE_ENABLED == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -94,9 +103,18 @@ jobs:
             echo "COPILOT_BIN=$copilot_bin"
             echo "COPILOT_EXTRACT_ROOT=$extract_root"
           } >> "$GITHUB_ENV"
-      - name: Qualify transformed prompts and resume on the native host
+      - name: Qualify prompts, resume, queueing and tool enforcement on the native host
         env:
           NATIVE_QUALIFICATION_RECEIPT: ${{ runner.temp }}/copilot-native-qualification.json
+          NATIVE_ACCEPTANCE_RECEIPT: ${{ runner.temp }}/native-acceptance/receipt.json
+        run: npm run test:native
+      - name: Exercise native tool enforcement against customer Cascade
+        if: inputs.live == true || vars.CUSTOMER_NATIVE_ENABLED == 'true'
+        env:
+          CUSTOMER_NATIVE_CLASSIFIER: live
+          CUSTOMER_NATIVE_API_URL: ${{ vars.CUSTOMER_API_URL }}
+          CUSTOMER_NATIVE_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
+          NATIVE_ACCEPTANCE_RECEIPT: ${{ runner.temp }}/native-acceptance/live-receipt.json
         run: npm run test:native
       - name: Print native qualification receipt
         if: always()
@@ -112,5 +130,13 @@ jobs:
         with:
           name: copilot-native-qualification
           path: ${{ runner.temp }}/copilot-native-qualification.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Retain native acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-acceptance
+          path: ${{ runner.temp }}/native-acceptance/
           if-no-files-found: warn
           retention-days: 14
