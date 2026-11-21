@@ -38,6 +38,7 @@ export const COPILOT_SDK_CLI_VERSION = "1.0.108-0";
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, "..");
+const REVIEWED_PLUGIN_VERSION = "0.3.6";
 const RUNTIME_FILES = [
   "dist/copilot-hook.js",
   "hooks/hooks.json",
@@ -317,13 +318,13 @@ async function runtimeHash(root) {
   return hash.digest("hex");
 }
 
-async function copyRuntime(destination) {
+async function copyRuntime(destination, sourceRoot = REPOSITORY_ROOT) {
   for (const relativePath of RUNTIME_FILES) {
     const target = path.join(destination, relativePath);
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    await copyFile(path.join(REPOSITORY_ROOT, relativePath), target);
+    await copyFile(path.join(sourceRoot, relativePath), target);
   }
-  const sourceHash = await runtimeHash(REPOSITORY_ROOT);
+  const sourceHash = await runtimeHash(sourceRoot);
   const copiedHash = await runtimeHash(destination);
   assert.equal(copiedHash, sourceHash, "Copied plugin runtime differs from reviewed source bytes");
   return sourceHash;
@@ -1305,21 +1306,51 @@ async function writeReceipt(receiptPath, receipt) {
   });
 }
 
+// NATIVE_PLUGIN_ROOT points the run at an already unpacked, separately
+// verified plugin payload (for example a published source archive) instead of
+// this checkout. The payload's runtime bytes are never rebuilt or replaced by
+// checkout bytes; only the verification code in this checkout is used.
+export function pluginRootConfig(env) {
+  const root = env.NATIVE_PLUGIN_ROOT;
+  if (root === undefined || root === "") {
+    assert.equal(
+      env.NATIVE_PLUGIN_VERSION ?? undefined,
+      undefined,
+      "NATIVE_PLUGIN_VERSION requires NATIVE_PLUGIN_ROOT",
+    );
+    return { pluginRoot: REPOSITORY_ROOT, expectedPluginVersion: REVIEWED_PLUGIN_VERSION };
+  }
+  assert.ok(path.isAbsolute(root), "NATIVE_PLUGIN_ROOT must be absolute");
+  assert.match(
+    env.NATIVE_PLUGIN_VERSION ?? "",
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u,
+    "NATIVE_PLUGIN_ROOT requires a plain semver NATIVE_PLUGIN_VERSION",
+  );
+  assert.match(env.NATIVE_SOURCE_SHA ?? "", /^[0-9a-f]{40}$/iu,
+    "NATIVE_PLUGIN_ROOT requires a full NATIVE_SOURCE_SHA");
+  return { pluginRoot: root, expectedPluginVersion: env.NATIVE_PLUGIN_VERSION };
+}
+
 function qualificationConfig(env) {
   const live = liveClassifierConfig(env);
   const binary = env.COPILOT_BIN;
   const assetPath = env.COPILOT_ASSET_PATH;
   const receiptPath = env.NATIVE_QUALIFICATION_RECEIPT;
+  const pluginRoot = pluginRootConfig(env);
   assert.ok(binary && path.isAbsolute(binary), "COPILOT_BIN must be an absolute path");
   assert.ok(assetPath && path.isAbsolute(assetPath), "COPILOT_ASSET_PATH must be absolute");
   assert.ok(
     live || (receiptPath && path.isAbsolute(receiptPath)),
     "NATIVE_QUALIFICATION_RECEIPT must be absolute",
   );
-  return { live, binary, assetPath, receiptPath };
+  return { live, binary, assetPath, receiptPath, ...pluginRoot };
 }
 
-async function runQualification({ live, binary, assetPath, receiptPath }, env, acceptance) {
+async function runQualification(
+  { live, binary, assetPath, receiptPath, pluginRoot, expectedPluginVersion },
+  env,
+  acceptance,
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), `copilot-native-${process.pid}-`));
   await chmod(root, 0o700);
   acceptance.redactions.unshift([root, "<private-root>"]);
@@ -1459,14 +1490,14 @@ async function runQualification({ live, binary, assetPath, receiptPath }, env, a
     };
 
     const packageJson = JSON.parse(
-      await readFile(path.join(REPOSITORY_ROOT, "package.json"), "utf8"),
+      await readFile(path.join(pluginRoot, "package.json"), "utf8"),
     );
     const pluginJson = JSON.parse(
-      await readFile(path.join(REPOSITORY_ROOT, "plugin.json"), "utf8"),
+      await readFile(path.join(pluginRoot, "plugin.json"), "utf8"),
     );
-    assert.equal(packageJson.version, "0.3.6");
+    assert.equal(packageJson.version, expectedPluginVersion);
     assert.equal(pluginJson.version, packageJson.version);
-    const runtimeSha256 = await copyRuntime(pluginDirectory);
+    const runtimeSha256 = await copyRuntime(pluginDirectory, pluginRoot);
     receipt.plugin = {
       version: packageJson.version,
       runtimeSha256,
@@ -1589,7 +1620,7 @@ export async function qualifyNativeCopilot(env = process.env) {
   );
   const live = liveRequested(env);
   const acceptance = {
-    sourceSha: env.GITHUB_SHA,
+    sourceSha: env.NATIVE_SOURCE_SHA ?? (env.NATIVE_PLUGIN_ROOT ? undefined : env.GITHUB_SHA),
     hostVersion: undefined,
     plugin: { installed_bytes_match: false, install_command: INSTALL_COMMAND },
     promptChecks: {

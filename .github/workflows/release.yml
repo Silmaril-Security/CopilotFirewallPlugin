@@ -1,0 +1,234 @@
+name: Customer qualification and release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this exact main candidate after qualification
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: customer-release
+  cancel-in-progress: false
+  queue: max
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      selected: ${{ steps.version.outputs.selected }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select a declared version bump or manual qualification
+        id: version
+        env:
+          BEFORE: ${{ github.event.before }}
+          MANIFEST: plugin.json
+        shell: python
+        run: |
+          import json, os, re, subprocess
+          from pathlib import Path
+          path = os.environ["MANIFEST"]
+          def version(text):
+              if path.endswith(".yaml"):
+                  fields = re.findall(r"^version:\s*(\d+\.\d+\.\d+)\s*$", text, re.M)
+                  if len(fields) != 1:
+                      raise ValueError("Expected one plugin version")
+                  return fields[0]
+              return json.loads(text)["version"]
+          current = version(Path(path).read_text())
+          if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", current):
+              raise ValueError("Expected a stable release version")
+          selected = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          if not selected:
+              before = os.environ["BEFORE"]
+              previous = version(subprocess.check_output(["git", "show", f"{before}:{path}"], text=True))
+              selected = current != previous
+              if selected and tuple(map(int, current.split("."))) <= tuple(map(int, previous.split("."))):
+                  raise ValueError("Release version must increase")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"selected={str(selected).lower()}\nversion={current}", file=output)
+  build:
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      filename: ${{ steps.package.outputs.filename }}
+      candidate_name: ${{ steps.package.outputs.candidate_name }}
+      digest: ${{ steps.package.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Archive the release commit
+        id: package
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "candidate_name=candidate-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          filename="CopilotFirewallPlugin-$VERSION.tar.gz"
+          git archive --format=tar.gz --prefix=source/ --output="$RUNNER_TEMP/$filename" "$GITHUB_SHA"
+          digest=$(sha256sum "$RUNNER_TEMP/$filename" | cut -d' ' -f1)
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.candidate_name }}
+          path: ${{ runner.temp }}/${{ steps.package.outputs.filename }}
+          if-no-files-found: error
+          retention-days: 7
+  customer:
+    name: Customer release acceptance
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    outputs:
+      framework_sha: ${{ steps.framework.outputs.commit }}
+      acceptance_attempt: ${{ steps.attempt.outputs.number }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.candidate_name }}
+          path: ${{ runner.temp }}/customer-candidate
+      - uses: actions/create-github-app-token@v3
+        id: reader
+        with:
+          client-id: ${{ vars.CUSTOMER_TESTS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CUSTOMER_TESTS_APP_PRIVATE_KEY }}
+          owner: Silmaril-Security
+          repositories: SilmarilCustomerTests
+          permission-contents: read
+      - uses: actions/checkout@v4
+        id: framework
+        with:
+          repository: Silmaril-Security/SilmarilCustomerTests
+          ref: 13dc645da2ec52655973f30b9ef68d2f78aa5380
+          token: ${{ steps.reader.outputs.token }}
+          path: _customer
+          persist-credentials: false
+      - name: Record this qualification attempt
+        id: attempt
+        run: echo "number=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Exercise the exact release candidate
+        uses: ./_customer/actions/release-acceptance
+        env:
+          CUSTOMER_NATIVE_API_URL: ${{ vars.CUSTOMER_API_URL }}
+          CUSTOMER_NATIVE_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
+        with:
+          product: CopilotFirewallPlugin
+          source-sha: ${{ github.sha }}
+          version: ${{ needs.plan.outputs.version }}
+          artifact: ${{ runner.temp }}/customer-candidate/${{ needs.build.outputs.filename }}
+          driver: scripts/customer-published-acceptance
+          expected-digest: ${{ needs.build.outputs.digest }}
+  publish:
+    name: Publish immutable GitHub release
+    needs: [plan, build, customer]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.candidate_name }}
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: customer-release-acceptance-attempt-${{ needs.customer.outputs.acceptance_attempt }}
+          path: ${{ runner.temp }}/customer-receipt
+      - uses: actions/create-github-app-token@v3
+        id: reader
+        with:
+          client-id: ${{ vars.CUSTOMER_TESTS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CUSTOMER_TESTS_APP_PRIVATE_KEY }}
+          owner: Silmaril-Security
+          repositories: SilmarilCustomerTests
+          permission-contents: read
+      - uses: actions/checkout@v4
+        id: framework
+        with:
+          repository: Silmaril-Security/SilmarilCustomerTests
+          ref: ${{ needs.customer.outputs.framework_sha }}
+          token: ${{ steps.reader.outputs.token }}
+          path: _customer
+          persist-credentials: false
+      - name: Verify the acceptance receipt against the bytes to publish
+        env:
+          QUALIFIED_ATTEMPT: ${{ needs.customer.outputs.acceptance_attempt }}
+          CANDIDATE: ${{ runner.temp }}/candidate/${{ needs.build.outputs.filename }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(sha256sum "$CANDIDATE" | cut -d' ' -f1)
+          python3 _customer/scripts/verify_release.py --receipt "$RUNNER_TEMP/customer-receipt/receipt.json" \
+            --product CopilotFirewallPlugin --source-sha "$GITHUB_SHA" --version "$VERSION" \
+            --digest "$digest" --run-id "$GITHUB_RUN_ID" --attempt "$QUALIFIED_ATTEMPT"
+      - name: Publish the verified bytes once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          CANDIDATE: ${{ runner.temp }}/candidate/${{ needs.build.outputs.filename }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          file=$(basename "$CANDIDATE")
+          remote_git() { git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "$@"; }
+          if remote_git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            remote_git fetch --no-tags origin "refs/tags/$tag"
+            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          else
+            code=$?
+            test "$code" -eq 2
+          fi
+          sha=$(sha256sum "$CANDIDATE" | cut -d' ' -f1)
+          note="Qualified customer release $tag from $GITHUB_SHA (SHA-256 $sha)."
+          if ! gh release view "$tag" --json tagName >/dev/null 2>&1; then
+            gh release create "$tag" --draft --title "$tag" --target "$GITHUB_SHA" --notes "$note"
+          fi
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+          if [[ "$draft" == true ]]; then
+            test "$(gh release view "$tag" --json body --jq .body)" = "$note"
+            test "$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)" = "$GITHUB_SHA"
+            assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+            if [[ -z "$assets" ]]; then
+              gh release upload "$tag" "$CANDIDATE"
+            else
+              test "$assets" = "$file"
+            fi
+          fi
+          dir=$(mktemp -d)
+          gh release download "$tag" --pattern "$file" --dir "$dir"
+          cmp "$CANDIDATE" "$dir/$file"
+          if [[ "$draft" == true ]]; then
+            # Claim the tag only after acceptance; concurrent creation may only agree.
+            if ! remote_git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null ||
+                remote_git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+            fi
+            remote_git fetch --no-tags origin "refs/tags/$tag"
+            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+            gh release edit "$tag" --draft=false
+          fi
