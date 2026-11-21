@@ -536,9 +536,12 @@ test("plugin root override requires an absolute payload and a plain semver", () 
   assert.equal(checkout.expectedPluginVersion, "0.3.6");
   assert.equal(path.isAbsolute(checkout.pluginRoot), true);
   assert.deepEqual(
-    pluginRootConfig({ NATIVE_PLUGIN_ROOT: "/payload/source", NATIVE_PLUGIN_VERSION: "1.2.3" }),
+    pluginRootConfig({ NATIVE_PLUGIN_ROOT: "/payload/source", NATIVE_PLUGIN_VERSION: "1.2.3", NATIVE_SOURCE_SHA: "a".repeat(40) }),
     { pluginRoot: "/payload/source", expectedPluginVersion: "1.2.3" },
   );
+  assert.throws(() => pluginRootConfig({
+    NATIVE_PLUGIN_ROOT: "/payload", NATIVE_PLUGIN_VERSION: "1.2.3", GITHUB_SHA: "b".repeat(40),
+  }), /requires a full NATIVE_SOURCE_SHA/u);
   assert.throws(() => pluginRootConfig({ NATIVE_PLUGIN_VERSION: "1.2.3" }), /requires NATIVE_PLUGIN_ROOT/u);
   assert.throws(() => pluginRootConfig({ NATIVE_PLUGIN_ROOT: "payload" }), /must be absolute/u);
   assert.throws(() => pluginRootConfig({ NATIVE_PLUGIN_ROOT: "/payload" }), /plain semver/u);

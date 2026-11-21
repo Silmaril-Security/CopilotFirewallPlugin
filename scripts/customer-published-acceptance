@@ -139,13 +139,24 @@ async function runHarness({ root, harness, host, payload, name, live }) {
   });
   const shared = await readFile(receipt, "utf8").then(JSON.parse, () => ({}));
   const matches = shared.schema === "silmaril.native-acceptance.v1"
-    && shared.source_sha === process.env.CUSTOMER_SOURCE_SHA
+    && shared.source_sha === childEnv.NATIVE_SOURCE_SHA
     && shared.host?.version === HOST_VERSION
     && shared.classifier === (live ? "live" : "loopback");
   const installed = matches && shared.plugin?.installed_bytes_match === true;
   const status = installed && outcome.code === 0 && shared.status === "PASS" ? "PASS"
     : matches && shared.status === "BLOCKED" ? "BLOCKED" : "FAIL";
-  if (status !== "PASS") process.stderr.write(`${name} harness ${status} (exit ${outcome.code})\n`);
+  if (status !== "PASS") {
+    // Keep child output, classifier content and credentials private.
+    let reason;
+    if (!shared.schema) reason = "acceptance receipt missing";
+    else if (shared.error && !shared.host?.version) reason = "host verification failed";
+    else if (shared.error && !shared.plugin?.installed_bytes_match) reason = "plugin installation verification failed";
+    else if (!matches) reason = "receipt identity mismatch";
+    else if (!installed) reason = "installed bytes differ";
+    else if (shared.status === "BLOCKED") reason = "classifier unavailable";
+    else reason = "native scenario checks did not pass";
+    process.stderr.write(`${name} harness ${status}: ${reason} (exit ${outcome.code})\n`);
+  }
   return { installed, status };
 }
 

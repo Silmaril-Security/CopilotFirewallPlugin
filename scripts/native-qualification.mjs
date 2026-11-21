@@ -1326,6 +1326,8 @@ export function pluginRootConfig(env) {
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u,
     "NATIVE_PLUGIN_ROOT requires a plain semver NATIVE_PLUGIN_VERSION",
   );
+  assert.match(env.NATIVE_SOURCE_SHA ?? "", /^[0-9a-f]{40}$/iu,
+    "NATIVE_PLUGIN_ROOT requires a full NATIVE_SOURCE_SHA");
   return { pluginRoot: root, expectedPluginVersion: env.NATIVE_PLUGIN_VERSION };
 }
 
@@ -1424,9 +1426,6 @@ async function runQualification(
       await chmod(directory, 0o700);
     }
 
-    if (!acceptance.sourceSha && pluginRoot !== REPOSITORY_ROOT) {
-      throw new Error("NATIVE_SOURCE_SHA is required when NATIVE_PLUGIN_ROOT is set");
-    }
     if (!acceptance.sourceSha) {
       const head = await runProcess("git", ["rev-parse", "HEAD"], {
         cwd: REPOSITORY_ROOT,
@@ -1621,7 +1620,7 @@ export async function qualifyNativeCopilot(env = process.env) {
   );
   const live = liveRequested(env);
   const acceptance = {
-    sourceSha: env.NATIVE_SOURCE_SHA ?? env.GITHUB_SHA,
+    sourceSha: env.NATIVE_SOURCE_SHA ?? (env.NATIVE_PLUGIN_ROOT ? undefined : env.GITHUB_SHA),
     hostVersion: undefined,
     plugin: { installed_bytes_match: false, install_command: INSTALL_COMMAND },
     promptChecks: {
