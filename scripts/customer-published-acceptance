@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+// Product driver for the central customer release acceptance.
+//
+// Env: CUSTOMER_ARTIFACT (absolute source archive), CUSTOMER_VERSION,
+//      CUSTOMER_SOURCE_SHA, CUSTOMER_ARTIFACT_SHA256, CUSTOMER_ARCHIVE_HELPER,
+//      CUSTOMER_RESULT. Optional CUSTOMER_NATIVE_API_URL/_KEY for the live case,
+//      COPILOT_BIN + COPILOT_ASSET_PATH to reuse an already pinned host.
+// Output: CUSTOMER_RESULT = {"install","native","live"} each PASS|FAIL|BLOCKED.
+//
+// The archive is verified, unpacked by the shared helper, installed into an
+// isolated Copilot 1.0.108 home, and the existing native harness is run twice
+// (loopback, then live) against those exact bytes. Detailed harness output
+// stays in a private temporary directory that is removed on exit.
+import { execFile } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
+import {
+  chmod, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+const CHECKOUT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const HOST_VERSION = "1.0.108";
+const HOST_URL = `https://github.com/github/copilot-cli/releases/download/v${HOST_VERSION}`;
+const RESULT = { install: "BLOCKED", native: "BLOCKED", live: "BLOCKED" };
+
+class Stop extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+const blocked = (message) => new Stop("BLOCKED", message);
+const failed = (message) => new Stop("FAIL", message);
+
+async function exec(command, args, options = {}) {
+  try {
+    return { code: 0, ...(await run(command, args, {
+      timeout: 600_000, maxBuffer: 8 << 20, encoding: "utf8", ...options,
+    })) };
+  } catch (error) {
+    return { code: error.code ?? 1, stdout: error.stdout ?? "", stderr: error.stderr ?? error.message };
+  }
+}
+
+async function sha256(file) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function writeResult(file) {
+  const temporary = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(RESULT)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
+function isolatedEnv(root, name) {
+  const base = path.join(root, name);
+  return {
+    HOME: path.join(base, "home"),
+    COPILOT_HOME: path.join(base, "copilot-home"),
+    TMPDIR: path.join(base, "tmp"),
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    LANG: "C.UTF-8",
+    CI: "true",
+    NO_COLOR: "1",
+    COPILOT_OFFLINE: "true",
+  };
+}
+
+async function mkdirs(env) {
+  for (const directory of [env.HOME, env.COPILOT_HOME, env.TMPDIR]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
+}
+
+// Always extract the binary from an archive with the digest pinned by the native harness.
+async function prepareHost(root, harness) {
+  const pin = await exec(process.execPath, [
+    "--import", "tsx", "--input-type=module", "-e",
+    "import { ASSET_NAME, EXPECTED_ASSET_SHA256 as S } from './scripts/native-qualification.mjs';"
+      + "console.log(JSON.stringify([ASSET_NAME, S ?? null]))",
+  ], { cwd: harness });
+  const [name, expected] = pin.code === 0 ? JSON.parse(pin.stdout) : [];
+  if (!expected) throw blocked(`No pinned Copilot ${HOST_VERSION} asset for this platform`);
+  const asset = path.join(root, "host", name);
+  const extractRoot = path.join(root, "host", "extract");
+  await mkdir(extractRoot, { recursive: true, mode: 0o700 });
+  if (process.env.COPILOT_ASSET_PATH) {
+    await cp(process.env.COPILOT_ASSET_PATH, asset);
+  } else {
+    const download = await exec("curl", [
+      "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--output", asset, `${HOST_URL}/${name}`,
+    ]);
+    if (download.code !== 0) throw blocked("Pinned Copilot host download failed");
+  }
+  if (await sha256(asset) !== expected) throw failed("Copilot host asset digest mismatch");
+  const unpack = await exec("python3", [
+    "-c", "import sys,tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2], filter='data')", asset, extractRoot,
+  ]);
+  if (unpack.code !== 0) throw failed("Copilot host asset could not be extracted safely");
+  const binaries = (await readdir(extractRoot, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name === "copilot");
+  if (binaries.length !== 1) throw failed("Copilot host asset must contain exactly one copilot executable");
+  const binary = path.join(binaries[0].parentPath, "copilot");
+  await chmod(binary, 0o700);
+  return { COPILOT_BIN: binary, COPILOT_ASSET_PATH: asset, COPILOT_EXTRACT_ROOT: extractRoot };
+}
+
+// Runs the existing harness; PASS needs exit 0 and a PASS shared receipt for
+// the expected classifier. A BLOCKED receipt (classifier fault) stays BLOCKED.
+async function runHarness({ root, harness, host, payload, name, live }) {
+  const env = isolatedEnv(root, name);
+  await mkdirs(env);
+  const receipt = path.join(root, `${name}-receipt.json`);
+  const childEnv = {
+    PATH: env.PATH, HOME: env.HOME, TMPDIR: env.TMPDIR, LANG: env.LANG, CI: "true",
+    ...host,
+    NATIVE_PLUGIN_ROOT: payload,
+    NATIVE_PLUGIN_VERSION: process.env.CUSTOMER_VERSION,
+    NATIVE_SOURCE_SHA: process.env.CUSTOMER_SOURCE_SHA.toLowerCase(),
+    NATIVE_ACCEPTANCE_RECEIPT: receipt,
+    NATIVE_QUALIFICATION_RECEIPT: path.join(root, `${name}-qualification.json`),
+    ...(live ? {
+      CUSTOMER_NATIVE_CLASSIFIER: "live",
+      CUSTOMER_NATIVE_API_URL: process.env.CUSTOMER_NATIVE_API_URL,
+      CUSTOMER_NATIVE_API_KEY: process.env.CUSTOMER_NATIVE_API_KEY,
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+        /^(NODE_EXTRA_CA_CERTS|NODE_USE_ENV_PROXY|https?_proxy|no_proxy)$/iu.test(key))),
+    } : {}),
+  };
+  const outcome = await exec(process.execPath, ["--import", "tsx", "scripts/native-qualification.mjs"], {
+    cwd: harness, env: childEnv, timeout: live ? 300_000 : 600_000,
+  });
+  const shared = await readFile(receipt, "utf8").then(JSON.parse, () => ({}));
+  const matches = shared.schema === "silmaril.native-acceptance.v1"
+    && shared.source_sha === process.env.CUSTOMER_SOURCE_SHA
+    && shared.host?.version === HOST_VERSION
+    && shared.classifier === (live ? "live" : "loopback");
+  const installed = matches && shared.plugin?.installed_bytes_match === true;
+  const status = installed && outcome.code === 0 && shared.status === "PASS" ? "PASS"
+    : matches && shared.status === "BLOCKED" ? "BLOCKED" : "FAIL";
+  if (status !== "PASS") process.stderr.write(`${name} harness ${status} (exit ${outcome.code})\n`);
+  return { installed, status };
+}
+
+async function main() {
+  const env = process.env;
+  if (!env.CUSTOMER_RESULT || !path.isAbsolute(env.CUSTOMER_RESULT)) {
+    process.stderr.write("CUSTOMER_RESULT must be an absolute path\n");
+    return 2;
+  }
+  await writeResult(env.CUSTOMER_RESULT);
+  let root;
+  try {
+    const missing = ["CUSTOMER_ARTIFACT", "CUSTOMER_VERSION", "CUSTOMER_SOURCE_SHA", "CUSTOMER_ARTIFACT_SHA256", "CUSTOMER_ARCHIVE_HELPER"]
+      .filter((name) => !env[name]);
+    if (missing.length) throw blocked(`Missing input: ${missing.join(", ")}`);
+    if (!path.isAbsolute(env.CUSTOMER_ARTIFACT)
+      || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(env.CUSTOMER_VERSION)
+      || !/^[0-9a-f]{40}$/iu.test(env.CUSTOMER_SOURCE_SHA)
+      || !/^[0-9a-f]{64}$/u.test(env.CUSTOMER_ARTIFACT_SHA256)) {
+      throw failed("Malformed CUSTOMER_* input");
+    }
+    let actual;
+    try {
+      actual = await sha256(env.CUSTOMER_ARTIFACT);
+    } catch (error) {
+      throw error.code === "ENOENT" ? blocked("CUSTOMER_ARTIFACT does not exist") : failed("CUSTOMER_ARTIFACT is unreadable");
+    }
+    if (actual !== env.CUSTOMER_ARTIFACT_SHA256) throw failed("CUSTOMER_ARTIFACT digest mismatch");
+
+    root = await mkdtemp(path.join(os.tmpdir(), "customer-published-"));
+    await chmod(root, 0o700);
+    // `git archive` records its commit in the tar header; compare when present.
+    const commit = await exec("sh", ["-c", 'gzip -dc "$1" 2>/dev/null | git get-tar-commit-id 2>/dev/null', "sh", env.CUSTOMER_ARTIFACT]);
+    if (commit.code !== 0 || commit.stdout.trim() !== env.CUSTOMER_SOURCE_SHA.toLowerCase()) {
+      throw failed("Archived commit differs from CUSTOMER_SOURCE_SHA");
+    }
+    const payload = path.join(root, "payload");
+    const unpack = await exec("python3", [env.CUSTOMER_ARCHIVE_HELPER, env.CUSTOMER_ARTIFACT, payload, "--prefix", "source"]);
+    if (unpack.code !== 0) throw failed("Archive helper rejected CUSTOMER_ARTIFACT");
+    for (const file of ["package.json", "plugin.json"]) {
+      const version = JSON.parse(await readFile(path.join(payload, file), "utf8").catch(() => "{}")).version;
+      if (version !== env.CUSTOMER_VERSION) throw failed(`${file} version does not equal CUSTOMER_VERSION`);
+    }
+
+    // Verification code and pinned dependencies come from a private copy of
+    // this checkout; the plugin bytes under test come only from the archive.
+    const harness = path.join(root, "harness");
+    await mkdir(path.join(harness, "scripts"), { recursive: true });
+    for (const file of ["package.json", "package-lock.json", "tsconfig.json", "scripts/native-qualification.mjs", "scripts/native-tool-response-mcp.mjs"]) {
+      await cp(path.join(CHECKOUT, file), path.join(harness, file));
+    }
+    await cp(path.join(CHECKOUT, "src"), path.join(harness, "src"), { recursive: true });
+    const npm = await exec("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], {
+      cwd: harness,
+      env: { ...env, HOME: env.HOME ?? os.homedir(), CUSTOMER_NATIVE_API_KEY: "", CUSTOMER_NATIVE_API_URL: "" },
+    });
+    if (npm.code !== 0) throw blocked("npm ci from the pinned lockfile failed");
+
+    const host = await prepareHost(root, harness);
+    const native = await runHarness({ root, harness, host, payload, name: "native", live: false });
+    RESULT.install = native.installed ? "PASS" : native.status === "BLOCKED" ? "BLOCKED" : "FAIL";
+    RESULT.native = native.status;
+    await writeResult(env.CUSTOMER_RESULT);
+    if (native.installed && env.CUSTOMER_NATIVE_API_URL && env.CUSTOMER_NATIVE_API_KEY) {
+      RESULT.live = (await runHarness({ root, harness, host, payload, name: "live", live: true })).status;
+    } else {
+      process.stderr.write("live case BLOCKED: CUSTOMER_NATIVE_API_URL and CUSTOMER_NATIVE_API_KEY are required\n");
+    }
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+    process.stderr.write(`${error.status}: ${error.message}\n`);
+    if (RESULT.install !== "PASS") RESULT.install = error.status;
+  } finally {
+    if (root) await rm(root, { recursive: true, force: true });
+    await writeResult(env.CUSTOMER_RESULT);
+  }
+  return Object.values(RESULT).every((status) => status === "PASS") ? 0 : 1;
+}
+
+process.exitCode = await main().catch((error) => {
+  process.stderr.write(`customer-published-acceptance failed: ${error.message}\n`);
+  return 1;
+});
