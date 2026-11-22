@@ -113,7 +113,7 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
       producerVersion: input.pluginVersion,
       pluginVersion: input.pluginVersion,
       policyVersion: bounded(stringValue(input.classification.policy_version)),
-      modelVersion: bounded(stringValue(input.classification.model_id)),
+      modelVersion: bounded(stringValue(input.classification.modelId)),
       observedAt: occurredAt,
     }),
   }) as LocalProtectionEventV1;

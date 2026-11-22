@@ -381,6 +381,7 @@ export function liveClassifierConfig(env) {
 }
 
 const VERSION_2_PATH = "/v2/classify";
+export const LOOPBACK_MODEL_ID = "copilot-native-qualification";
 const VERSION_1_FALLBACK_STATUSES = [403, 404, 405];
 
 export const CLASSIFY_BODIES = Object.freeze({
@@ -407,7 +408,7 @@ function loopbackReply(render, text) {
       severity: malicious ? "high" : null,
       outcome: malicious ? "control_abuse" : null,
       governance: null,
-      model_id: null,
+      model_id: LOOPBACK_MODEL_ID,
     }),
   };
 }

@@ -749,6 +749,23 @@ test("local evidence records the decision grades and never a score", () => {
   assert.equal(build({ prediction: "BENIGN" }).prediction, "unavailable");
 });
 
+test("local evidence records the SDK model identifier as its bounded model version", () => {
+  const modelVersion = (classification: Record<string, unknown>) => buildLocalProtectionEvent({
+    pluginVersion: PLUGIN_VERSION,
+    hook: "pre_tool",
+    mode: "block",
+    classification: { action: "block", source: "model", ...classification },
+    policyDecision: "block",
+    nativeAction: "block_returned",
+  }).provenance.modelVersion;
+  assert.equal(modelVersion({ modelId: " silmaril-cascade-1-6 " }), "silmaril-cascade-1-6");
+  assert.equal(modelVersion({ modelId: "m".repeat(200) }), "m".repeat(128));
+  for (const absent of [{}, { modelId: "   " }, { modelId: 16 }, { modelId: null }, { model_id: "silmaril-cascade-1-6" }]) {
+    assert.equal(modelVersion(absent), undefined);
+  }
+  assert.equal(modelVersion({ action: "allow", source: undefined, modelId: "silmaril-cascade-1-6" }), "silmaril-cascade-1-6");
+});
+
 test("a result without an explicit allow is enforced in block mode", async () => {
   const events: any[] = [];
   assert.deepEqual(

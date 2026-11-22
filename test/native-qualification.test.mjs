@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   ACCEPTANCE_SCHEMA,
   CLASSIFY_BODIES,
+  LOOPBACK_MODEL_ID,
   INSTALL_COMMAND,
   LIVE_ATTACK_TEXT,
   PROMPT_SCENARIO_ID,
@@ -543,6 +544,7 @@ for (const [wire, bodies, graded] of [
       assert.equal(blocked.severity, graded ? "high" : undefined);
       assert.equal(allowed.prediction, "benign");
       for (const event of events) {
+        assert.equal(event.provenance.modelVersion, LOOPBACK_MODEL_ID);
         assert.equal(event.schemaVersion, 1);
         assert.equal(Object.hasOwn(event, "modelScore"), false);
         assert.equal(Object.hasOwn(event, "modelThreshold"), false);
