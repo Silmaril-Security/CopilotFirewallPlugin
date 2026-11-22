@@ -13,9 +13,12 @@
   carries one of the documented levels, and stop recording `modelScore` and
   `modelThreshold`. The event schema version and every other field are
   unchanged.
-- Record the SDK result's `modelId` as the local evidence `modelVersion`. The
-  field previously read `model_id`, which the SDK never returned, so it was
-  always absent.
+- Record the SDK result's `modelId` as the local evidence `modelVersion` and
+  the governance decision's `policyVersion` as `policyVersion`. The fields
+  previously read `model_id` and a top-level `policy_version`, which the SDK
+  never returned, so they were always absent. Both have control and format
+  characters removed and are limited to 128 UTF-8 bytes, the limits Silmaril
+  for macOS enforces on ingestion.
 - Serve a version 2 body on `/v2/classify` and a version 1 body on `/classify`
   from the native qualification classifier. In live mode it mirrors the
   requested classify path upstream and records `{action, source, mode}`.

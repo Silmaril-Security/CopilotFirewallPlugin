@@ -749,21 +749,41 @@ test("local evidence records the decision grades and never a score", () => {
   assert.equal(build({ prediction: "BENIGN" }).prediction, "unavailable");
 });
 
-test("local evidence records the SDK model identifier as its bounded model version", () => {
-  const modelVersion = (classification: Record<string, unknown>) => buildLocalProtectionEvent({
+test("local evidence records the model and governance policy versions within the ingestion bounds", () => {
+  const provenance = (classification: Record<string, unknown>) => buildLocalProtectionEvent({
     pluginVersion: PLUGIN_VERSION,
     hook: "pre_tool",
     mode: "block",
-    classification: { action: "block", source: "model", ...classification },
+    classification: { action: "block", source: "governance", ...classification },
     policyDecision: "block",
     nativeAction: "block_returned",
-  }).provenance.modelVersion;
-  assert.equal(modelVersion({ modelId: " silmaril-cascade-1-6 " }), "silmaril-cascade-1-6");
-  assert.equal(modelVersion({ modelId: "m".repeat(200) }), "m".repeat(128));
-  for (const absent of [{}, { modelId: "   " }, { modelId: 16 }, { modelId: null }, { model_id: "silmaril-cascade-1-6" }]) {
-    assert.equal(modelVersion(absent), undefined);
+  }).provenance;
+  for (const [reported, recorded] of [
+    [" silmaril-cascade-1-6 ", "silmaril-cascade-1-6"],
+    ["silmaril\u0000cascade\u200b\u00851-6", "silmaril cascade 1-6"],
+    ["m".repeat(200), "m".repeat(128)],
+    ["\u00e9".repeat(100), "\u00e9".repeat(64)],
+    [`${"m".repeat(127)}\u00e9`, "m".repeat(127)],
+    ["\ud800", undefined],
+    ["   ", undefined],
+    [16, undefined],
+    [null, undefined],
+  ] as [unknown, string | undefined][]) {
+    const recordedProvenance = provenance({
+      modelId: reported,
+      governance: { action: "block", policyVersion: reported },
+    });
+    assert.equal(recordedProvenance.modelVersion, recorded);
+    assert.equal(recordedProvenance.policyVersion, recorded);
   }
-  assert.equal(modelVersion({ action: "allow", source: undefined, modelId: "silmaril-cascade-1-6" }), "silmaril-cascade-1-6");
+  const unread = provenance({
+    model_id: "silmaril-cascade-1-6",
+    policy_version: "policy-7",
+    governance: { action: "block", policy_version: "policy-7" },
+  });
+  assert.equal(Object.hasOwn(unread, "modelVersion"), false);
+  assert.equal(Object.hasOwn(unread, "policyVersion"), false);
+  assert.equal(Object.hasOwn(provenance({ governance: null }), "policyVersion"), false);
 });
 
 test("a result without an explicit allow is enforced in block mode", async () => {
