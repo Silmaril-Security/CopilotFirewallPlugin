@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+- Bundle `@silmaril-security/sdk` 1.0.0. It calls `/v2/classify` on the
+  configured endpoint and repeats the request on `/classify` when a deployment
+  answers 403, 404, or 405, so configuration is unchanged.
+- Treat every classification whose `action` is not `allow` as a block
+  candidate. The decision already includes governance, so a governance block
+  and a model block follow the same Shadow, Warn, and Block behavior as before.
+- Read the local evidence risk category from the classification `outcome`.
+- Record `confidence` and `severity` in local evidence when the classification
+  carries one of the documented levels, and stop recording `modelScore` and
+  `modelThreshold`. The event schema version and every other field are
+  unchanged.
+- Serve a version 2 body on `/v2/classify` and a version 1 body on `/classify`
+  from the native qualification classifier. In live mode it mirrors the
+  requested classify path upstream and records `{action, source, mode}`.
+
 ## 0.3.6 - 2026-11-09
 
 - Register `userPromptTransformed` instead of `userPromptSubmitted` and classify

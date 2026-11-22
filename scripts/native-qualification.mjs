@@ -38,7 +38,7 @@ export const COPILOT_SDK_CLI_VERSION = "1.0.108-0";
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, "..");
-const REVIEWED_PLUGIN_VERSION = "0.3.6";
+const REVIEWED_PLUGIN_VERSION = "0.4.0";
 const RUNTIME_FILES = [
   "dist/copilot-hook.js",
   "hooks/hooks.json",
@@ -380,70 +380,125 @@ export function liveClassifierConfig(env) {
   return { url, key };
 }
 
-function loopbackVerdict(text) {
+const VERSION_2_PATH = "/v2/classify";
+const VERSION_1_FALLBACK_STATUSES = [403, 404, 405];
+
+export const CLASSIFY_BODIES = Object.freeze({
+  [VERSION_2_PATH]: (decision) => ({ results: [decision] }),
+  "/classify": ({ source, outcome, governance, model_id }) => ({
+    prediction: source === "model" ? "MALICIOUS" : "BENIGN",
+    score: source === "model" ? 0.99 : 0.01,
+    threshold: 0.5,
+    primary_outcome: outcome ?? "benign",
+    outcome_scores: outcome ? { [outcome]: 0.99 } : {},
+    governance,
+    model_id,
+  }),
+});
+
+function loopbackReply(render, text) {
+  if (!render) return { refused: 404 };
   const malicious = LOOPBACK_MALICIOUS_MARKERS.some((marker) => text.includes(marker));
   return {
-    prediction: malicious ? "MALICIOUS" : "BENIGN",
-    score: malicious ? 0.99 : 0.01,
-    threshold: 0.5,
-    primary_outcome: malicious ? "prompt_injection" : undefined,
+    verdict: render({
+      action: malicious ? "block" : "allow",
+      source: malicious ? "model" : null,
+      confidence: malicious ? "high" : null,
+      severity: malicious ? "high" : null,
+      outcome: malicious ? "control_abuse" : null,
+      governance: null,
+      model_id: null,
+    }),
   };
 }
 
-async function liveVerdict(live, body, attempt, fetchImpl) {
+function wireDecision(verdict) {
+  if (Array.isArray(verdict?.results)) {
+    const [result] = verdict.results;
+    assert.equal(typeof result?.action, "string", "Classifier returned no action");
+    return {
+      action: result.action === "allow" ? "allow" : "block",
+      source: result.source ?? null,
+      mode: null,
+    };
+  }
+  assert.ok(
+    ["BENIGN", "MALICIOUS"].includes(verdict?.prediction),
+    "Classifier returned no decision",
+  );
+  const blocks = verdict.prediction === "MALICIOUS" || verdict.governance?.action === "block";
+  const modelBlocks = (verdict.model_prediction ?? verdict.prediction) === "MALICIOUS";
+  return {
+    action: blocks ? "block" : "allow",
+    source: blocks ? (modelBlocks ? "model" : "governance") : null,
+    mode: verdict.mode ?? null,
+  };
+}
+
+function liveEndpoint(configured, classifyPath) {
+  const url = new URL(configured);
+  url.pathname = url.pathname.replace(/\/$/u, "").replace(/\/(?:v2\/)?classify$/u, "")
+    + classifyPath;
+  return url.href;
+}
+
+async function liveReply(live, classifyPath, body, attempt, fetchImpl) {
   attempt.outcome = "transport_error";
-  const upstream = await fetchImpl(live.url, {
+  const upstream = await fetchImpl(liveEndpoint(live.url, classifyPath), {
     method: "POST",
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
     headers: { "content-type": "application/json", "x-api-key": live.key },
     body: JSON.stringify(body),
   });
+  if (
+    classifyPath === VERSION_2_PATH
+    && VERSION_1_FALLBACK_STATUSES.includes(upstream.status)
+  ) {
+    return { refused: upstream.status };
+  }
   attempt.httpStatus = upstream.status;
   attempt.outcome = "http_error";
   assert.ok(upstream.ok, "Live classifier request failed");
   attempt.outcome = "invalid_response";
-  const verdict = await upstream.json();
-  assert.ok(
-    ["BENIGN", "MALICIOUS"].includes(verdict?.prediction),
-    "Live classifier returned no prediction",
-  );
-  attempt.upstream = {
-    prediction: verdict.prediction,
-    mode: verdict.mode ?? null,
-    action: verdict.governance?.action ?? null,
-  };
-  return verdict;
+  return { verdict: await upstream.json() };
 }
 
-export function startClassifier({ live, fetchImpl = fetch } = {}) {
+export function startClassifier({ live, fetchImpl = fetch, bodies = CLASSIFY_BODIES } = {}) {
   const requests = [];
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.socket.remoteAddress, "127.0.0.1");
       assert.equal(request.method, "POST");
-      assert.equal(request.url, "/classify");
+      if (!Object.hasOwn(CLASSIFY_BODIES, request.url)) {
+        response.writeHead(404).end();
+        return;
+      }
       const body = await readJsonRequest(request);
       assert.ok(CLASSIFIER_HOOKS.includes(body.hook), "Unexpected classifier hook");
       assert.equal(typeof body.text, "string");
       const attempt = { body, text: byteReceipt(body.text), outcome: "pending" };
       requests.push(attempt);
       const startedAt = performance.now();
-      let verdict;
+      let reply;
       try {
-        verdict = live
-          ? await liveVerdict(live, body, attempt, fetchImpl)
-          : loopbackVerdict(body.text);
+        reply = live
+          ? await liveReply(live, request.url, body, attempt, fetchImpl)
+          : loopbackReply(bodies[request.url], body.text);
       } finally {
         attempt.durationMs = Math.round(performance.now() - startedAt);
       }
-      attempt.decision = verdict.prediction === "MALICIOUS"
-        || verdict.governance?.action === "block"
-        ? "malicious"
-        : "benign";
+      if (reply.refused) {
+        requests.splice(requests.indexOf(attempt), 1);
+        response.writeHead(reply.refused).end();
+        return;
+      }
+      const decision = wireDecision(reply.verdict);
+      if (live) attempt.upstream = decision;
+      attempt.decision = decision.action === "block" ? "malicious" : "benign";
       attempt.outcome = "success";
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(verdict));
+      response.end(JSON.stringify(reply.verdict));
     } catch (error) {
       response.writeHead(500, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid" }));
@@ -807,12 +862,12 @@ export function productEvidenceIdentity(callback) {
   assert.equal(target.text, text, "Production identity changed native callback bytes");
   assert.equal(target.sessionId, sessionId, "Production identity changed native session");
   const productEvent = buildLocalProtectionEvent({
-    pluginVersion: "0.3.6",
+    pluginVersion: REVIEWED_PLUGIN_VERSION,
     hook: "user_input",
     mode: "block",
     requestFingerprint: target.requestFingerprint,
     sessionId,
-    classification: { prediction: "BENIGN" },
+    classification: { action: "allow" },
     policyDecision: "allow",
     nativeAction: "allowed",
     occurredAt: new Date(0),

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { text } from "node:stream/consumers";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ACCEPTANCE_SCHEMA,
+  CLASSIFY_BODIES,
   INSTALL_COMMAND,
   LIVE_ATTACK_TEXT,
   PROMPT_SCENARIO_ID,
@@ -30,6 +34,7 @@ import {
 } from "../scripts/native-qualification.mjs";
 
 const RUNTIME_FILES = ["dist/copilot-hook.js", "hooks/hooks.json", "package.json", "plugin.json"];
+const BUNDLED_HOOK = fileURLToPath(new URL("../dist/copilot-hook.js", import.meta.url));
 const ARTIFACT_SHA256 = "a".repeat(64);
 const [ALLOW, PRE_TOOL_BLOCK, TOOL_RESPONSE_BLOCK] = toolScenarios(false);
 const [LIVE_ALLOW, LIVE_TOOL_RESPONSE_BLOCK] = toolScenarios(true);
@@ -81,7 +86,7 @@ function acceptanceInput(overrides = {}) {
     live: false,
     plugin: {
       name: "silmaril-firewall",
-      version: "0.3.6",
+      version: "0.4.0",
       artifact_sha256: ARTIFACT_SHA256,
       installed_bytes_match: true,
       install_command: INSTALL_COMMAND,
@@ -291,7 +296,7 @@ test("live acceptance runs only allow and tool-response-block with the customer 
 });
 
 test("live classifier failures are attributed to a named blocker instead of a product failure", () => {
-  const upstream = { prediction: "BENIGN", mode: "block", action: null };
+  const upstream = { action: "allow", source: null, mode: "block" };
   const unflagged = toolResponseObservation(
     LIVE_TOOL_RESPONSE_BLOCK,
     "benign",
@@ -335,7 +340,7 @@ test("live acceptance passes on local block mode whatever mode the classifier re
   for (const mode of [null, "shadow", "block"]) {
     const enforced = evaluateToolScenario(LIVE_TOOL_RESPONSE_BLOCK, {
       ...toolResponseObservation(LIVE_TOOL_RESPONSE_BLOCK, "malicious", SAFE_BLOCK_MESSAGE, {
-        upstream: { prediction: "MALICIOUS", mode, action: "allow" },
+        upstream: { action: "block", source: "model", mode },
       }),
       live: true,
     });
@@ -414,51 +419,142 @@ test("a live run without its API key still writes a failing acceptance receipt",
   }
 });
 
-test("live classifier proxy forwards each request upstream and records the upstream verdict", async () => {
+test("live classifier proxy mirrors each classify path upstream and records the upstream decision", async () => {
   const upstreamCalls = [];
-  const verdicts = [
+  const replies = [
+    new Response(JSON.stringify({
+      results: [{
+        action: "block",
+        source: "model",
+        confidence: "very_high",
+        severity: "critical",
+        outcome: "secret_exposure",
+        governance: null,
+        model_id: null,
+      }],
+    })),
+    new Response("missing", { status: 404 }),
     new Response(JSON.stringify({
       prediction: "MALICIOUS",
+      model_prediction: "BENIGN",
       mode: "block",
       governance: { action: "block" },
     })),
     new Response("unavailable", { status: 503 }),
   ];
   const classifier = startClassifier({
-    live: { url: "https://cascade.invalid/classify", key: "synthetic-live-key" },
+    live: { url: "https://cascade.invalid/stage/classify?tenant=synthetic", key: "synthetic-live-key" },
     fetchImpl: async (url, init) => {
       upstreamCalls.push({ url, key: init.headers["x-api-key"], body: JSON.parse(init.body) });
-      return verdicts.shift();
+      return replies.shift();
     },
   });
-  const classifierUrl = await classifier.listen();
-  const classify = (text) => fetch(classifierUrl, {
+  const origin = new URL(await classifier.listen()).origin;
+  const classify = (classifyPath, text) => fetch(`${origin}${classifyPath}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ hook: "tool_response", text }),
   });
   try {
-    const flagged = await classify(LIVE_ATTACK_TEXT);
-    assert.equal(flagged.status, 200);
-    assert.equal((await flagged.json()).prediction, "MALICIOUS");
-    assert.equal((await classify("benign control")).status, 500);
+    const graded = await classify("/v2/classify", LIVE_ATTACK_TEXT);
+    assert.equal(graded.status, 200);
+    assert.equal((await graded.json()).results[0].severity, "critical");
+    assert.equal((await classify("/v2/classify", LIVE_ATTACK_TEXT)).status, 404);
+    assert.equal(classifier.requests.length, 1);
+    const governed = await classify("/classify", LIVE_ATTACK_TEXT);
+    assert.equal(governed.status, 200);
+    assert.equal((await governed.json()).prediction, "MALICIOUS");
+    assert.equal((await classify("/classify", "benign control")).status, 500);
+    assert.equal((await classify("/v3/classify", "benign control")).status, 404);
   } finally {
     await classifier.close();
   }
   assert.deepEqual(upstreamCalls.map((call) => [call.url, call.key, call.body.text]), [
-    ["https://cascade.invalid/classify", "synthetic-live-key", LIVE_ATTACK_TEXT],
-    ["https://cascade.invalid/classify", "synthetic-live-key", "benign control"],
+    ["https://cascade.invalid/stage/v2/classify?tenant=synthetic", "synthetic-live-key", LIVE_ATTACK_TEXT],
+    ["https://cascade.invalid/stage/v2/classify?tenant=synthetic", "synthetic-live-key", LIVE_ATTACK_TEXT],
+    ["https://cascade.invalid/stage/classify?tenant=synthetic", "synthetic-live-key", LIVE_ATTACK_TEXT],
+    ["https://cascade.invalid/stage/classify?tenant=synthetic", "synthetic-live-key", "benign control"],
   ]);
-  const [flagged, failed] = classifier.requests;
-  assert.equal(flagged.decision, "malicious");
-  assert.equal(flagged.outcome, "success");
-  assert.deepEqual(flagged.upstream, { prediction: "MALICIOUS", mode: "block", action: "block" });
-  assert.equal(typeof flagged.durationMs, "number");
+  const [graded, governed, failed] = classifier.requests;
+  assert.equal(classifier.requests.length, 3);
+  assert.equal(graded.decision, "malicious");
+  assert.equal(graded.outcome, "success");
+  assert.deepEqual(graded.upstream, { action: "block", source: "model", mode: null });
+  assert.equal(governed.decision, "malicious");
+  assert.deepEqual(governed.upstream, { action: "block", source: "governance", mode: "block" });
+  assert.equal(typeof governed.durationMs, "number");
   assert.equal(failed.outcome, "http_error");
   assert.equal(failed.httpStatus, 503);
   assert.equal(failed.decision, undefined);
   assert.equal(typeof failed.durationMs, "number");
 });
+
+function runBundledHook(eventName, input, env) {
+  const child = spawn(process.execPath, [BUNDLED_HOOK, eventName], { env });
+  const output = text(child.stdout);
+  child.stdin.end(JSON.stringify(input));
+  return output.then(JSON.parse);
+}
+
+for (const [wire, bodies, graded] of [
+  ["a version 2 body", CLASSIFY_BODIES, true],
+  ["the version 1 fallback", { "/classify": CLASSIFY_BODIES["/classify"] }, false],
+  ["a version 1 body on the version 2 path", { "/v2/classify": CLASSIFY_BODIES["/classify"] }, false],
+]) {
+  test(`the bundled plugin enforces a block and records its evidence from ${wire}`, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "copilot-classify-wire-"));
+    const evidenceDirectory = path.join(directory, "incoming");
+    const classifier = startClassifier({ bodies });
+    const env = {
+      PATH: process.env.PATH,
+      HOME: directory,
+      SILMARIL_CONFIG_PATH: path.join(directory, "absent.json"),
+      SILMARIL_API_KEY: "synthetic-loopback-key",
+      SILMARIL_API_URL: await classifier.listen(),
+      SILMARIL_MODE: "block",
+      SILMARIL_LOCAL_EVENT_DIR: evidenceDirectory,
+    };
+    const preToolUse = (toolCall) => runBundledHook("preToolUse", {
+      sessionId: PRE_TOOL_BLOCK.sessionId,
+      timestamp: 1_787_156_024_056,
+      cwd: directory,
+      toolName: toolCall.name,
+      toolArgs: toolCall.arguments,
+    }, env);
+    try {
+      assert.deepEqual(await preToolUse(ALLOW.toolCall), {});
+      assert.deepEqual(await preToolUse(PRE_TOOL_BLOCK.toolCall), {
+        permissionDecision: "deny",
+        permissionDecisionReason: SAFE_BLOCK_MESSAGE,
+      });
+      assert.deepEqual(
+        classifier.requests.map((request) => [request.decision, request.outcome]),
+        [["benign", "success"], ["malicious", "success"]],
+      );
+      const events = await Promise.all((await readdir(evidenceDirectory)).map(async (name) =>
+        JSON.parse(await readFile(path.join(evidenceDirectory, name), "utf8"))));
+      const blocked = events.find((event) => event.policyDecision === "block");
+      const allowed = events.find((event) => event.policyDecision === "allow");
+      assert.equal(events.length, 2);
+      assert.equal(blocked.prediction, "malicious");
+      assert.equal(blocked.nativeAction, "block_returned");
+      assert.equal(blocked.riskClass, "unsafe_agent_control");
+      assert.equal(blocked.confidence, graded ? "high" : undefined);
+      assert.equal(blocked.severity, graded ? "high" : undefined);
+      assert.equal(allowed.prediction, "benign");
+      for (const event of events) {
+        assert.equal(event.schemaVersion, 1);
+        assert.equal(Object.hasOwn(event, "modelScore"), false);
+        assert.equal(Object.hasOwn(event, "modelThreshold"), false);
+      }
+      assert.equal(Object.hasOwn(allowed, "confidence"), false);
+      assert.equal(Object.hasOwn(allowed, "severity"), false);
+    } finally {
+      await classifier.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("installed bytes match only for the exact runtime file set and digest", () => {
   const installed = {
@@ -533,7 +629,7 @@ test("acceptance receipt reports blocked live runs and redacts paths from failur
 
 test("plugin root override requires an absolute payload and a plain semver", () => {
   const checkout = pluginRootConfig({});
-  assert.equal(checkout.expectedPluginVersion, "0.3.6");
+  assert.equal(checkout.expectedPluginVersion, "0.4.0");
   assert.equal(path.isAbsolute(checkout.pluginRoot), true);
   assert.deepEqual(
     pluginRootConfig({ NATIVE_PLUGIN_ROOT: "/payload/source", NATIVE_PLUGIN_VERSION: "1.2.3", NATIVE_SOURCE_SHA: "a".repeat(40) }),
