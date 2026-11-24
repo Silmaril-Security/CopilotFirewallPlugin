@@ -1,8 +1,8 @@
 # Copilot CLI 1.0.108 native qualification
 
-The `native-copilot` CI job qualifies the unreleased 0.3.6 plugin against the
+The `native-copilot` CI job qualifies the unreleased 0.3.7 plugin against the
 official Linux x64 Copilot CLI 1.0.108 executable. It is separate from the
-deterministic handler tests and does not qualify the published 0.3.5 artifact.
+deterministic handler tests and does not qualify the published 0.3.6 artifact.
 
 ## Isolation and provenance
 
