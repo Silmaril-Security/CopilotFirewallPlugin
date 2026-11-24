@@ -19,9 +19,10 @@ The recorded evidence from the disposable
 resume behavior against the checksum-pinned native 1.0.108 host. It also covers
 FIFO native queueing through the pinned public Copilot SDK
 `session.send({mode: "enqueue"})` JSON-RPC contract. Deterministic handler tests
-alone do not establish native behavior. For a reproducible installation of the
-published release, check out v0.3.6 and use Copilot CLI's supported
-local-directory form:
+alone do not establish native behavior. Current source is the unreleased
+v0.3.7 candidate, which bundles `@silmaril-security/sdk` 0.11.0 with the same
+registered hooks. For a reproducible installation of the published release, check
+out v0.3.6 and use Copilot CLI's supported local-directory form:
 
 ```sh
 git clone https://github.com/Silmaril-Security/CopilotFirewallPlugin.git
@@ -51,7 +52,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` rebuilds `dist/copilot-hook.js` through `scripts/build.mjs`. That file stays committed because `hooks/hooks.json` executes it directly. The bundle includes `@silmaril-security/sdk` 0.8.2.
+`npm test` rebuilds `dist/copilot-hook.js` through `scripts/build.mjs`. That file stays committed because `hooks/hooks.json` executes it directly. The bundle includes `@silmaril-security/sdk` 0.11.0.
 
 ## Protection boundaries
 
@@ -70,8 +71,8 @@ For a block candidate, the current event behaves as follows:
 
 `userPromptSubmitted` is not registered or classified because command-hook output for that event is ignored and classifying it would duplicate the primary transformed-prompt scan. The compatibility CLI entry point accepts the old event name and returns `{}`. Copilot invokes `userPromptTransformed` once for the primary message and once for every preceding message in a batched submission. Benign, Shadow, Warn, and failed classifications return `{}`, preserving the model-facing bytes exactly. In Block mode only a block candidate returns `modifiedTransformedPrompt`; this replaces model-facing and persisted session-history content but does not reject or handle the turn. Copilot's documented contract replays that stored replacement unchanged on resume.
 
-`agentStop` stays registered, and the handler ignores its payload, including `transcriptPath`. `subagentStop` classifies the current `response`. When `stopHookActive` is true, block mode leaves that response unchanged and sets `blockUnavailable`. Tool events identify a tool, or an MCP tool when the name is `mcp__<server>__<tool>`. Prompt and subagent events identify an agent. The plugin passes that native identity through the SDK's typed governance option. SDK 0.8.2 owns canonical top-level `resource` serialization, including `parent_id` for a recognized MCP tool; governance metadata remains compatibility attribution.
+`agentStop` stays registered, and the handler ignores its payload, including `transcriptPath`. `subagentStop` classifies the current `response`. When `stopHookActive` is true, block mode leaves that response unchanged and sets `blockUnavailable`. Tool events identify a tool, or an MCP tool when the name is `mcp__<server>__<tool>`. Prompt and subagent events identify an agent. The plugin passes that native identity through the SDK's typed governance option. SDK 0.11.0 owns canonical top-level `resource` serialization, including `parent_id` for a recognized MCP tool; governance metadata remains compatibility attribution.
 
-Local evidence contains fingerprints, decisions, bounded risk metadata, and provenance for producer `CopilotFirewallPlugin` at the plugin version. `policyVersion` and `modelVersion` are copied only from `policy_version` and `model_id` on the classification object. The shipped SDK 0.8.2 result does not include those keys, and it does not copy governance `policyVersion` into local evidence. Local evidence never stores raw prompts, tool arguments, results, responses, or the Mac computer name. The default directory is `$HOME/Library/Application Support/Silmaril/Evidence/incoming`. `SILMARIL_LOCAL_EVENT_DIR`, or `SILMARIL_EVIDENCE_ROOT/incoming`, overrides it.
+Local evidence contains fingerprints, decisions, bounded risk metadata, and provenance for producer `CopilotFirewallPlugin` at the plugin version. `policyVersion` and `modelVersion` are copied only from `policy_version` and `model_id` on the classification object. The shipped SDK 0.11.0 result does not include those keys, and it does not copy governance `policyVersion` into local evidence. Local evidence never stores raw prompts, tool arguments, results, responses, or the Mac computer name. The default directory is `$HOME/Library/Application Support/Silmaril/Evidence/incoming`. `SILMARIL_LOCAL_EVENT_DIR`, or `SILMARIL_EVIDENCE_ROOT/incoming`, overrides it.
 
 Classify metadata provenance is plugin-owned: `schema_version` 1, `harness` `copilot`, an optional v4 endpoint id, and on macOS a sanitized ComputerName in `device_name`. Spoofed provenance is replaced. A failed or non-macOS lookup omits `device_name`, and classification still runs.

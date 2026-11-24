@@ -38,7 +38,7 @@ export const COPILOT_SDK_CLI_VERSION = "1.0.108-0";
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, "..");
-const REVIEWED_PLUGIN_VERSION = "0.3.6";
+const REVIEWED_PLUGIN_VERSION = "0.3.7";
 const RUNTIME_FILES = [
   "dist/copilot-hook.js",
   "hooks/hooks.json",
@@ -807,7 +807,7 @@ export function productEvidenceIdentity(callback) {
   assert.equal(target.text, text, "Production identity changed native callback bytes");
   assert.equal(target.sessionId, sessionId, "Production identity changed native session");
   const productEvent = buildLocalProtectionEvent({
-    pluginVersion: "0.3.6",
+    pluginVersion: "0.3.7",
     hook: "user_input",
     mode: "block",
     requestFingerprint: target.requestFingerprint,

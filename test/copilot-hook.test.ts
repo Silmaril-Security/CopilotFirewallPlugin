@@ -398,7 +398,7 @@ test("SDK serializes native agent, tool, and MCP governance resources on the wir
       Object.hasOwn(request.metadata.silmaril.governance.resource, "parentId"),
       false,
     );
-    assert.equal(request.metadata.silmaril.sdk_version, "0.8.2");
+    assert.equal(request.metadata.silmaril.sdk_version, "0.11.0");
     assert.equal(request.metadata.sessionId, "session-1");
     assert.equal(request.metadata.conversationId, "session-1");
     assert.equal(
@@ -707,11 +707,11 @@ test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.3.6");
+  assert.equal(packageJson.version, "0.3.7");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.11.0");
   assert.deepEqual(Object.keys(hooks.hooks), [
     "userPromptTransformed",
     "preToolUse",

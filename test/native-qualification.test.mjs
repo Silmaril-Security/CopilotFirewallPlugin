@@ -81,7 +81,7 @@ function acceptanceInput(overrides = {}) {
     live: false,
     plugin: {
       name: "silmaril-firewall",
-      version: "0.3.6",
+      version: "0.3.7",
       artifact_sha256: ARTIFACT_SHA256,
       installed_bytes_match: true,
       install_command: INSTALL_COMMAND,
@@ -533,7 +533,7 @@ test("acceptance receipt reports blocked live runs and redacts paths from failur
 
 test("plugin root override requires an absolute payload and a plain semver", () => {
   const checkout = pluginRootConfig({});
-  assert.equal(checkout.expectedPluginVersion, "0.3.6");
+  assert.equal(checkout.expectedPluginVersion, "0.3.7");
   assert.equal(path.isAbsolute(checkout.pluginRoot), true);
   assert.deepEqual(
     pluginRootConfig({ NATIVE_PLUGIN_ROOT: "/payload/source", NATIVE_PLUGIN_VERSION: "1.2.3", NATIVE_SOURCE_SHA: "a".repeat(40) }),
