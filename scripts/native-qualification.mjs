@@ -457,6 +457,7 @@ async function liveReply(live, classifyPath, body, attempt, fetchImpl) {
     classifyPath === VERSION_2_PATH
     && VERSION_1_FALLBACK_STATUSES.includes(upstream.status)
   ) {
+    await upstream.body?.cancel();
     return { refused: upstream.status };
   }
   attempt.httpStatus = upstream.status;
@@ -468,6 +469,7 @@ async function liveReply(live, classifyPath, body, attempt, fetchImpl) {
 
 export function startClassifier({ live, fetchImpl = fetch, bodies = CLASSIFY_BODIES } = {}) {
   const requests = [];
+  const refusedProbeStarts = new Map();
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.socket.remoteAddress, "127.0.0.1");
@@ -481,7 +483,9 @@ export function startClassifier({ live, fetchImpl = fetch, bodies = CLASSIFY_BOD
       assert.equal(typeof body.text, "string");
       const attempt = { body, text: byteReceipt(body.text), outcome: "pending" };
       requests.push(attempt);
-      const startedAt = performance.now();
+      const logicalEvent = JSON.stringify(body);
+      const startedAt = refusedProbeStarts.get(logicalEvent) ?? performance.now();
+      refusedProbeStarts.delete(logicalEvent);
       let reply;
       try {
         reply = live
@@ -492,6 +496,7 @@ export function startClassifier({ live, fetchImpl = fetch, bodies = CLASSIFY_BOD
       }
       if (reply.refused) {
         requests.splice(requests.indexOf(attempt), 1);
+        refusedProbeStarts.set(logicalEvent, startedAt);
         response.writeHead(reply.refused).end();
         return;
       }

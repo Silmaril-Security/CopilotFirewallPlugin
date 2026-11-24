@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { text } from "node:stream/consumers";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -489,6 +490,32 @@ test("live classifier proxy mirrors each classify path upstream and records the 
   assert.equal(failed.httpStatus, 503);
   assert.equal(failed.decision, undefined);
   assert.equal(typeof failed.durationMs, "number");
+});
+
+test("live classifier proxy times a refused version 2 probe and its fallback as one classification", async () => {
+  const refusal = new Response("missing", { status: 404 });
+  const classifier = startClassifier({
+    live: { url: "https://cascade.invalid/stage/classify", key: "synthetic-live-key" },
+    fetchImpl: async (url) => {
+      await delay(300);
+      return new URL(url).pathname.endsWith("/v2/classify")
+        ? refusal
+        : Response.json({ prediction: "BENIGN" });
+    },
+  });
+  const origin = new URL(await classifier.listen()).origin;
+  const body = JSON.stringify({ hook: "user_input", text: "benign control" });
+  const classify = (classifyPath) => fetch(`${origin}${classifyPath}`, { method: "POST", body });
+  try {
+    assert.equal((await classify("/v2/classify")).status, 404);
+    assert.equal((await classify("/classify")).status, 200);
+  } finally {
+    await classifier.close();
+  }
+  assert.equal(refusal.bodyUsed, true);
+  assert.equal(classifier.requests.length, 1);
+  assert.equal(classifier.requests[0].outcome, "success");
+  assert.ok(classifier.requests[0].durationMs >= 600, `${classifier.requests[0].durationMs} ms`);
 });
 
 function runBundledHook(eventName, input, env) {
