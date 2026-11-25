@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.7
+## 0.3.7 - 2026-11-25
 
 - Bundle `@silmaril-security/sdk` 0.11.0, which names the tenant
   acceptable-use policy outcome `abuse` and rejects responses with missing or
