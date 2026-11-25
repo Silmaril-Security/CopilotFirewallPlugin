@@ -10,24 +10,24 @@ A governance action of `block` is a block candidate even when the prediction is 
 
 ## Install
 
-Release [v0.3.6](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.6)
+Release [v0.3.7](https://github.com/Silmaril-Security/CopilotFirewallPlugin/releases/tag/v0.3.7)
 is the latest published immutable release. Its annotated tag peels to source
-commit [`9ae9d11f6cd7703b6f1920f62403967c45aa37af`](https://github.com/Silmaril-Security/CopilotFirewallPlugin/commit/9ae9d11f6cd7703b6f1920f62403967c45aa37af)
+commit [`ced6278e65ef7f4d4201f03d6db7412a48c97e60`](https://github.com/Silmaril-Security/CopilotFirewallPlugin/commit/ced6278e65ef7f4d4201f03d6db7412a48c97e60)
 and targets the GitHub Copilot CLI 1.0.108 `userPromptTransformed` contract.
 The recorded evidence from the disposable
 [`native-copilot`](docs/NATIVE_QUALIFICATION.md) CI job covers primary and
 resume behavior against the checksum-pinned native 1.0.108 host. It also covers
 FIFO native queueing through the pinned public Copilot SDK
 `session.send({mode: "enqueue"})` JSON-RPC contract. Deterministic handler tests
-alone do not establish native behavior. Current source is the unreleased
-v0.3.7 candidate, which bundles `@silmaril-security/sdk` 0.11.0 with the same
-registered hooks. For a reproducible installation of the published release, check
-out v0.3.6 and use Copilot CLI's supported local-directory form:
+alone do not establish native behavior. v0.3.7 bundles `@silmaril-security/sdk`
+0.11.0 with the same registered hooks as v0.3.6. For a reproducible installation
+of the published release, check out v0.3.7 and use Copilot CLI's supported
+local-directory form:
 
 ```sh
 git clone https://github.com/Silmaril-Security/CopilotFirewallPlugin.git
 cd CopilotFirewallPlugin
-git checkout --detach v0.3.6
+git checkout --detach v0.3.7
 copilot plugin install .
 ```
 
