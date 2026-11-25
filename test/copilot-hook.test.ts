@@ -40,8 +40,8 @@ const BASE_ENV = {
 };
 
 test("effective mode keeps an explicit non-blocking override authoritative", () => {
-  assert.equal(effectiveMode({ prediction: "MALICIOUS", mode: "block" }, "shadow"), "shadow");
-  assert.equal(effectiveMode({ prediction: "MALICIOUS" }), "shadow");
+  assert.equal(effectiveMode({ action: "block", mode: "block" }, "shadow"), "shadow");
+  assert.equal(effectiveMode({ action: "block" }), "shadow");
 });
 
 test("governance context normalizes tool, MCP, and subagent identities", () => {
@@ -68,8 +68,15 @@ test("governance context normalizes tool, MCP, and subagent identities", () => {
     agent: "copilot",
     resource: { kind: "agent", id: "task" },
   });
-  assert.equal(isBlockCandidate({ prediction: "BENIGN", governance: { action: "block" } }), true);
-  assert.equal(isBlockCandidate({ prediction: "MALICIOUS", governance: { action: "allow" } }), true);
+});
+
+test("every decision other than an explicit allow is a block candidate", () => {
+  assert.equal(isBlockCandidate({ action: "allow" }), false);
+  assert.equal(isBlockCandidate({ action: "block", source: "model" }), true);
+  assert.equal(isBlockCandidate({ action: "block", source: "governance" }), true);
+  assert.equal(isBlockCandidate({ action: "ALLOW" }), true);
+  assert.equal(isBlockCandidate({ prediction: "BENIGN" }), true);
+  assert.equal(isBlockCandidate({}), true);
 });
 
 function dependencies(
@@ -86,7 +93,7 @@ function dependencies(
       calls.push({ text, options });
       const result = results.shift();
       if (result instanceof Error) throw result;
-      return result ?? { prediction: "BENIGN", score: 0.01, threshold: 0.5 };
+      return result ?? { action: "allow" };
     }
   }
   return {
@@ -181,7 +188,7 @@ test("shadow mode classifies only events with current native content", async () 
     "subagentStop",
   ];
   const deps = dependencies(
-    eventNames.map(() => ({ prediction: "MALICIOUS", score: 0.9, threshold: 0.5 })),
+    eventNames.map(() => ({ action: "block", source: "model" })),
     events,
     calls,
   );
@@ -224,7 +231,7 @@ test("transformed prompts preserve bytes and use only bounded model-facing repla
     "userPromptTransformed",
     input,
     BASE_ENV,
-    dependencies([{ prediction: "BENIGN" }], [], calls),
+    dependencies([{ action: "allow" }], [], calls),
   );
   assert.deepEqual(benign, {});
   assert.equal(calls.find((call) => call.text)?.text, exact);
@@ -235,7 +242,7 @@ test("transformed prompts preserve bytes and use only bounded model-facing repla
     "userPromptTransformed",
     input,
     { ...BASE_ENV, SILMARIL_MODE: "block" },
-    dependencies([{ prediction: "MALICIOUS" }], events),
+    dependencies([{ action: "block", source: "model" }], events),
   );
   assert.deepEqual(blocked, { modifiedTransformedPrompt: SAFE_BLOCK_MESSAGE });
   assert.deepEqual(Object.keys(blocked), ["modifiedTransformedPrompt"]);
@@ -278,7 +285,7 @@ test("transformed prompt identity is deterministic for primary, batch, retry, an
 
   const calls: any[] = [];
   const batchDependencies = dependencies(
-    [{ prediction: "BENIGN" }, { prediction: "BENIGN" }],
+    [{ action: "allow" }, { action: "allow" }],
     [],
     calls,
   );
@@ -289,7 +296,7 @@ test("transformed prompt identity is deterministic for primary, batch, retry, an
     ["preceding model-facing bytes", "runtime-transformed user prompt"],
   );
 
-  const malicious = { prediction: "MALICIOUS" };
+  const malicious = { action: "block", source: "model" };
   const blockEnv = { ...BASE_ENV, SILMARIL_MODE: "block" };
   const originalOutput = await runCopilotHook(
     "userPromptTransformed",
@@ -312,7 +319,7 @@ test("transformed prompt identity is deterministic for primary, batch, retry, an
       "userPromptSubmitted",
       payload("userPromptSubmitted"),
       BASE_ENV,
-      dependencies([{ prediction: "MALICIOUS" }], [], legacyCalls),
+      dependencies([{ action: "block", source: "model" }], [], legacyCalls),
     ),
     {},
   );
@@ -398,7 +405,7 @@ test("SDK serializes native agent, tool, and MCP governance resources on the wir
       Object.hasOwn(request.metadata.silmaril.governance.resource, "parentId"),
       false,
     );
-    assert.equal(request.metadata.silmaril.sdk_version, "0.11.0");
+    assert.equal(request.metadata.silmaril.sdk_version, "1.0.0");
     assert.equal(request.metadata.sessionId, "session-1");
     assert.equal(request.metadata.conversationId, "session-1");
     assert.equal(
@@ -437,7 +444,7 @@ test("SDK wire metadata preserves session correlation and retry request identity
 });
 
 test("block mode uses native deny, replacement, and stop decisions", async () => {
-  const malicious = { prediction: "MALICIOUS", primaryOutcome: "code_execution" };
+  const malicious = { action: "block", source: "model", outcome: "system_compromise" };
   const env = { ...BASE_ENV, SILMARIL_BLOCK_MALICIOUS: "true" };
   const events: any[] = [];
   const preTool = await runCopilotHook(
@@ -495,8 +502,9 @@ test("block mode uses native deny, replacement, and stop decisions", async () =>
 
 test("governance block uses native deny only in existing block mode", async () => {
   const governed = {
-    prediction: "BENIGN",
-    governance: { action: "block", rule_id: "block-tool", policy_version: "v1" },
+    action: "block",
+    source: "governance",
+    governance: { action: "block", ruleId: "block-tool", policyVersion: "v1" },
   };
 
   assert.deepEqual(
@@ -547,7 +555,7 @@ test("governance block uses native deny only in existing block mode", async () =
 });
 
 test("warn mode surfaces one bounded warning only on supported context hooks", async () => {
-  const malicious = { prediction: "MALICIOUS", mode: "warn", score: 0.99 };
+  const malicious = { action: "block", source: "model", mode: "warn" };
   const events: any[] = [];
   const backendControlledEnv: Record<string, string> = { ...BASE_ENV };
   delete backendControlledEnv.SILMARIL_BLOCK_MALICIOUS;
@@ -582,7 +590,7 @@ test("classification and evidence failures always fail open", async () => {
     payload("preToolUse"),
     { ...BASE_ENV, SILMARIL_BLOCK_MALICIOUS: "true" },
     {
-      ...dependencies([{ prediction: "MALICIOUS" }]),
+      ...dependencies([{ action: "block", source: "model" }]),
       evidenceEmitter: async () => { throw new Error("disk failure"); },
     },
   );
@@ -688,8 +696,9 @@ test("provenance is plugin-owned and local evidence is private and raw-content f
     sessionId: "raw-session-id",
     toolName: "bash",
     classification: {
-      prediction: "MALICIOUS",
-      primaryOutcome: "code_execution",
+      action: "block",
+      source: "model",
+      outcome: "system_compromise",
       raw: "must-not-leak",
     },
     policyDecision: "block",
@@ -703,15 +712,104 @@ test("provenance is plugin-owned and local evidence is private and raw-content f
   assert.equal((await stat(root)).mode & 0o777, 0o700);
 });
 
+test("local evidence records the decision grades and never a score", () => {
+  const build = (classification: Record<string, unknown>) => buildLocalProtectionEvent({
+    pluginVersion: PLUGIN_VERSION,
+    hook: "tool_result",
+    mode: "block",
+    classification,
+    policyDecision: "block",
+    nativeAction: "content_replaced",
+  });
+  const graded = build({
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "critical",
+    outcome: "secret_exposure",
+    score: 1,
+    threshold: 0.5,
+  });
+  assert.equal(graded.schemaVersion, 1);
+  assert.equal(graded.prediction, "malicious");
+  assert.equal(graded.confidence, "very_high");
+  assert.equal(graded.severity, "critical");
+  assert.equal(graded.riskClass, "credential_exposure");
+  assert.equal(Object.hasOwn(graded, "modelScore"), false);
+  assert.equal(Object.hasOwn(graded, "modelThreshold"), false);
+
+  const ungraded = build({ action: "block", source: "model", confidence: "certain", severity: 4 });
+  assert.equal(ungraded.prediction, "malicious");
+  assert.equal(ungraded.riskClass, "unknown");
+  assert.equal(Object.hasOwn(ungraded, "confidence"), false);
+  assert.equal(Object.hasOwn(ungraded, "severity"), false);
+
+  assert.equal(build({ action: "block", source: "governance" }).prediction, "benign");
+  assert.equal(build({ action: "allow" }).prediction, "benign");
+  assert.equal(build({ prediction: "BENIGN" }).prediction, "unavailable");
+});
+
+test("local evidence records the model and governance policy versions within the ingestion bounds", () => {
+  const provenance = (classification: Record<string, unknown>) => buildLocalProtectionEvent({
+    pluginVersion: PLUGIN_VERSION,
+    hook: "pre_tool",
+    mode: "block",
+    classification: { action: "block", source: "governance", ...classification },
+    policyDecision: "block",
+    nativeAction: "block_returned",
+  }).provenance;
+  for (const [reported, recorded] of [
+    [" silmaril-cascade-1-6 ", "silmaril-cascade-1-6"],
+    ["silmaril\u0000cascade\u200b\u00851-6", "silmaril cascade 1-6"],
+    ["m".repeat(200), "m".repeat(128)],
+    ["\u00e9".repeat(100), "\u00e9".repeat(64)],
+    [`${"m".repeat(127)}\u00e9`, "m".repeat(127)],
+    ["\ud800", undefined],
+    ["   ", undefined],
+    [16, undefined],
+    [null, undefined],
+  ] as [unknown, string | undefined][]) {
+    const recordedProvenance = provenance({
+      modelId: reported,
+      governance: { action: "block", policyVersion: reported },
+    });
+    assert.equal(recordedProvenance.modelVersion, recorded);
+    assert.equal(recordedProvenance.policyVersion, recorded);
+  }
+  const unread = provenance({
+    model_id: "silmaril-cascade-1-6",
+    policy_version: "policy-7",
+    governance: { action: "block", policy_version: "policy-7" },
+  });
+  assert.equal(Object.hasOwn(unread, "modelVersion"), false);
+  assert.equal(Object.hasOwn(unread, "policyVersion"), false);
+  assert.equal(Object.hasOwn(provenance({ governance: null }), "policyVersion"), false);
+});
+
+test("a result without an explicit allow is enforced in block mode", async () => {
+  const events: any[] = [];
+  assert.deepEqual(
+    await runCopilotHook(
+      "preToolUse",
+      payload("preToolUse"),
+      { ...BASE_ENV, SILMARIL_MODE: "block" },
+      dependencies([{ prediction: "BENIGN", score: 0.01 }], events),
+    ),
+    { permissionDecision: "deny", permissionDecisionReason: SAFE_BLOCK_MESSAGE },
+  );
+  assert.equal(events[0].policyDecision, "block");
+  assert.equal(events[0].prediction, "unavailable");
+});
+
 test("manifests are Copilot-native and version aligned", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const pluginJson = JSON.parse(await readFile(new URL("../plugin.json", import.meta.url), "utf8"));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.3.7");
+  assert.equal(packageJson.version, "0.4.0");
   assert.equal(pluginJson.name, "silmaril-firewall");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(pluginJson.hooks, "hooks/hooks.json");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.11.0");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "1.0.0");
   assert.deepEqual(Object.keys(hooks.hooks), [
     "userPromptTransformed",
     "preToolUse",
@@ -730,7 +828,7 @@ test("classify metadata includes the mac computer name without an endpoint id", 
   const stderr = await captureStderr(async () => {
     assert.deepEqual(
       await runCopilotHook("userPromptTransformed", payload("userPromptTransformed"), env, {
-        ...dependencies([{ prediction: "BENIGN" }], events, calls),
+        ...dependencies([{ action: "allow" }], events, calls),
         deviceName: () => "  Office Mac \n",
       }),
       {},
@@ -757,7 +855,7 @@ test("invalid or failed device-name lookup still classifies and drops spoofed me
   const stderr = await captureStderr(async () => {
     assert.deepEqual(
       await runCopilotHook("userPromptTransformed", payload("userPromptTransformed"), env, {
-        ...dependencies([{ prediction: "BENIGN" }], events, calls),
+        ...dependencies([{ action: "allow" }], events, calls),
         deviceName: () => {
           throw new Error("scutil failed for Office Mac");
         },
@@ -767,7 +865,7 @@ test("invalid or failed device-name lookup still classifies and drops spoofed me
     for (const deviceName of ["Office\u0000Mac", "Office\u007FMac", "Office\u0085Mac"]) {
       assert.deepEqual(
         await runCopilotHook("preToolUse", payload("preToolUse"), env, {
-          ...dependencies([{ prediction: "BENIGN" }], events, calls),
+          ...dependencies([{ action: "allow" }], events, calls),
           deviceName: () => deviceName,
         }),
         {},
@@ -808,12 +906,23 @@ async function captureSdkRequests(
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      if (request.url !== "/v2/classify") {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
       requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
-        prediction: "BENIGN",
-        score: 0.01,
-        threshold: 0.5,
+        results: [{
+          action: "allow",
+          source: null,
+          confidence: null,
+          severity: null,
+          outcome: null,
+          governance: null,
+          model_id: null,
+        }],
       }));
     } catch {
       response.writeHead(500);

@@ -5,6 +5,9 @@ import path from "node:path";
 
 const MAX_EVENT_BYTES = 16 * 1_024;
 const MAX_SAFE_VALUE_LENGTH = 128;
+const MAX_PROVENANCE_VERSION_BYTES = 128;
+const CONFIDENCE_LEVELS = ["very_low", "low", "medium", "high", "very_high"] as const;
+const SEVERITY_LEVELS = ["minimal", "low", "moderate", "high", "critical"] as const;
 
 export type ProtectionHook = "user_input" | "pre_tool" | "post_tool" | "tool_result" | "llm_output" | "subagent" | "unknown";
 export type ProtectionCategory = "credential_exposure" | "sensitive_data_exposure" | "code_execution" | "destructive_change" | "external_communication" | "privilege_change" | "unsafe_agent_control" | "other" | "unknown";
@@ -23,8 +26,8 @@ export type LocalProtectionEventV1 = {
   riskClass: ProtectionCategory;
   attemptedConsequence: { category: ProtectionCategory; summary: string };
   prediction: "benign" | "malicious" | "unknown" | "unavailable";
-  modelScore?: number;
-  modelThreshold?: number;
+  confidence?: (typeof CONFIDENCE_LEVELS)[number];
+  severity?: (typeof SEVERITY_LEVELS)[number];
   policyDecision: "allow" | "monitor" | "warn" | "block" | "unavailable";
   nativeAction: NativeAction;
   warnDelivery?: "delivered" | "unsupported";
@@ -72,10 +75,7 @@ const CONSEQUENCE_SUMMARIES: Record<ProtectionCategory, string> = {
 
 export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProtectionEventV1 {
   const occurredAt = (input.occurredAt ?? new Date()).toISOString();
-  const prediction = normalizePrediction(input.classification.prediction);
-  const riskClass = normalizeCategory(
-    input.classification.primaryOutcome ?? input.classification.primary_outcome,
-  );
+  const riskClass = normalizeCategory(input.classification.outcome);
   const nativeResponseReturned = input.nativeAction === "block_returned"
     || input.nativeAction === "content_replaced";
   return omitUndefined({
@@ -98,9 +98,9 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
       category: riskClass,
       summary: CONSEQUENCE_SUMMARIES[riskClass],
     },
-    prediction,
-    modelScore: unitInterval(input.classification.score ?? input.classification.malicious_score),
-    modelThreshold: unitInterval(input.classification.threshold),
+    prediction: normalizePrediction(input.classification),
+    confidence: CONFIDENCE_LEVELS.find((level) => level === input.classification.confidence),
+    severity: SEVERITY_LEVELS.find((level) => level === input.classification.severity),
     policyDecision: input.policyDecision,
     nativeAction: input.nativeAction,
     warnDelivery: input.warnDelivery,
@@ -113,8 +113,10 @@ export function buildLocalProtectionEvent(input: LocalEvidenceInput): LocalProte
       producer: "CopilotFirewallPlugin",
       producerVersion: input.pluginVersion,
       pluginVersion: input.pluginVersion,
-      policyVersion: bounded(stringValue(input.classification.policy_version)),
-      modelVersion: bounded(stringValue(input.classification.model_id)),
+      policyVersion: provenanceVersion(
+        (input.classification.governance as Record<string, unknown> | null | undefined)?.policyVersion,
+      ),
+      modelVersion: provenanceVersion(input.classification.modelId),
       observedAt: occurredAt,
     }),
   }) as LocalProtectionEventV1;
@@ -168,11 +170,12 @@ export function resolveLocalEventDirectory(
   );
 }
 
-function normalizePrediction(value: unknown): LocalProtectionEventV1["prediction"] {
-  if (value === "MALICIOUS") return "malicious";
-  if (value === "BENIGN") return "benign";
-  if (value === undefined || value === null) return "unavailable";
-  return "unknown";
+function normalizePrediction(
+  classification: Record<string, unknown>,
+): LocalProtectionEventV1["prediction"] {
+  if (classification.action === "allow") return "benign";
+  if (typeof classification.action !== "string") return "unavailable";
+  return classification.source === "governance" ? "benign" : "malicious";
 }
 
 function normalizeCategory(value: unknown): ProtectionCategory {
@@ -199,12 +202,6 @@ function normalizeCategory(value: unknown): ProtectionCategory {
   return mapping[normalized] ?? (normalized ? "other" : "unknown");
 }
 
-function unitInterval(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-    ? value
-    : undefined;
-}
-
 function safeToolName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -225,8 +222,14 @@ function bounded(value: string | undefined): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_SAFE_VALUE_LENGTH) : undefined;
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+function provenanceVersion(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let bounded = "";
+  for (const character of value.replace(/[\p{Cc}\p{Cf}\p{Cs}]+/gu, " ").trim()) {
+    if (Buffer.byteLength(bounded + character, "utf8") > MAX_PROVENANCE_VERSION_BYTES) break;
+    bounded += character;
+  }
+  return bounded.trimEnd() || undefined;
 }
 
 function omitUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {

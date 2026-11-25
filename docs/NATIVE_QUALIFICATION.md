@@ -41,7 +41,8 @@ the CLI's extracted native addon.
 Both services are loopback-only fixtures:
 
 - The classifier returns deterministic benign or malicious decisions from
-  synthetic runtime-check markers.
+  synthetic runtime-check markers. It serves a version 2 body on
+  `/v2/classify` and the equivalent version 1 body on `/classify`.
 - The OpenAI Responses fixture uses the BYOK variables advertised by
   `copilot help providers` and returns a fixed assistant message. In the
   prompt scenarios it never emits tool calls. In the tool scenarios it emits
@@ -136,8 +137,11 @@ the live step ran).
 
 `CUSTOMER_NATIVE_CLASSIFIER=live` with `CUSTOMER_NATIVE_API_URL` (https only)
 and `CUSTOMER_NATIVE_API_KEY` makes the loopback classifier forward each
-request to that endpoint and record its duration and upstream
-`{prediction, mode, action}`. Live mode runs only `allow` and
+request to the same classify path of that endpoint and record its duration
+and upstream `{action, source, mode}`, read from a version 2 or version 1
+body. When the endpoint answers 403, 404, or 405 on `/v2/classify`, the proxy
+relays that status without recording a request, and the bundled SDK repeats
+the request on `/classify`. Live mode runs only `allow` and
 `tool-response-block`, with the shared customer attack text as the poison; it
 skips the prompt scenarios and writes only the shared receipt. A classifier
 fault in a scenario is reported as `BLOCKED` with one of

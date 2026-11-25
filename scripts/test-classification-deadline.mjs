@@ -37,7 +37,7 @@ try {
         const stream = new ReadableStream({
           start(controller) {
             // Leave JSON and API error bodies unfinished, like a slow native fetch.
-            controller.enqueue(new TextEncoder().encode(status === 200 ? '{"prediction":' : 'partial error'));
+            controller.enqueue(new TextEncoder().encode(status === 200 ? '{"results":' : 'partial error'));
             signal.addEventListener("abort", () => {
               bodyWasBeingRead = response.bodyUsed;
               bodyAbortReason = signal.reason;

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+- Bundle `@silmaril-security/sdk` 1.0.0. It calls `/v2/classify` on the
+  configured endpoint and repeats the request on `/classify` when a deployment
+  answers 403, 404, or 405, so configuration is unchanged.
+- Treat every classification whose `action` is not `allow` as a block
+  candidate. The decision already includes governance, so a governance block
+  and a model block follow the same Shadow, Warn, and Block behavior as before.
+- Read the local evidence risk category from the classification `outcome`.
+- Record `confidence` and `severity` in local evidence when the classification
+  carries one of the documented levels, and stop recording `modelScore` and
+  `modelThreshold`. The event schema version and every other field are
+  unchanged.
+- Record the SDK result's `modelId` as the local evidence `modelVersion` and
+  the governance decision's `policyVersion` as `policyVersion`. The fields
+  previously read `model_id` and a top-level `policy_version`, which the SDK
+  never returned, so they were always absent. Both have control and format
+  characters removed and are limited to 128 UTF-8 bytes, the limits Silmaril
+  for macOS enforces on ingestion.
+- Serve a version 2 body on `/v2/classify` and a version 1 body on `/classify`
+  from the native qualification classifier. In live mode it mirrors the
+  requested classify path upstream and records `{action, source, mode}`.
+
 ## 0.3.7 - 2026-11-25
 
 - Bundle `@silmaril-security/sdk` 0.11.0, which names the tenant
