@@ -112,7 +112,7 @@ jobs:
         if: inputs.live == true || vars.CUSTOMER_NATIVE_ENABLED == 'true'
         env:
           CUSTOMER_NATIVE_CLASSIFIER: live
-          CUSTOMER_NATIVE_API_URL: ${{ vars.CUSTOMER_API_URL }}
+          CUSTOMER_NATIVE_API_URL: ${{ secrets.CUSTOMER_API_URL }}
           CUSTOMER_NATIVE_API_KEY: ${{ secrets.CUSTOMER_API_KEY }}
           NATIVE_ACCEPTANCE_RECEIPT: ${{ runner.temp }}/native-acceptance/live-receipt.json
         run: npm run test:native

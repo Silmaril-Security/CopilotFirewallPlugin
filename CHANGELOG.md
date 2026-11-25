@@ -23,6 +23,14 @@
   from the native qualification classifier. In live mode it mirrors the
   requested classify path upstream and records `{action, source, mode}`.
 
+## 0.3.7 - 2026-11-25
+
+- Bundle `@silmaril-security/sdk` 0.11.0, which names the tenant
+  acceptable-use policy outcome `abuse` and rejects responses with missing or
+  out-of-range verdict scores; the hook treats a rejected response as a
+  classification error and fails open. Registered hooks, governance resource
+  serialization, and local evidence are unchanged.
+
 ## 0.3.6 - 2026-11-09
 
 - Register `userPromptTransformed` instead of `userPromptSubmitted` and classify
